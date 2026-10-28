@@ -176,10 +176,9 @@ pub fn apply<B: Backend>(
     if let Err(error) = persist {
         return Err(format!(
             "Device result: {}. Could not finalize journal: {error}. Backup: {}",
-            if result.is_ok() {
-                "verified".into()
-            } else {
-                result.unwrap_err()
+            match &result {
+                Ok(_) => "verified",
+                Err(error) => error.as_str(),
             },
             backup.display()
         ));
