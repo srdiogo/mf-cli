@@ -7,7 +7,7 @@ This fork starts from `nolight132/mf-cli` commit
 The legacy command interface and packaging are retained from that project.
 Pavel Olizko and sleebu developed its Linux CLI/kernel transport.
 
-Andrea Nero's [MF4 contribution, PR #6](https://github.com/nolight132/mf-cli/pull/6)
+`andreanero`'s [MF4 contribution, PR #6](https://github.com/nolight132/mf-cli/pull/6)
 added model detection, MF4 INST per input and phantom power. His
 [September working notes](https://github.com/andreanero/mf-cli-mf4-dev/blob/11c2ca399db041681e33549a645feae2a11af319/docs/mf4/NOTES.md)
 already described parts of the mixer, read requests, trim link and LED control.
