@@ -6,8 +6,9 @@ phantom power and Direct Mono where supported. This development branch adds
 MiniFuse 4 mixer status, verified mixing/routing changes and configuration files.
 
 The new functionality is **unreleased**, based on upstream v0.2.6. It is backed
-by Windows captures and a previous Linux reference implementation; this Rust
-fork has not yet been exercised on hardware. See [evidence and validation](docs/mf4/evidence.md).
+by Windows captures, a previous Linux reference implementation and tests of
+this Rust fork on one MiniFuse 4. See [evidence and validation](docs/mf4/evidence.md)
+and the [hardware validation report](docs/mf4/hardware-validation.md).
 
 ## Compatibility
 
@@ -185,6 +186,7 @@ sha256sum -c docs/mf4/SHA256SUMS
 
 - [Protocol and kernel ABI](docs/mf4/protocol.md)
 - [Evidence, credits and hardware-validation boundaries](docs/mf4/evidence.md)
+- [MiniFuse 4 hardware validation](docs/mf4/hardware-validation.md)
 - [Configuration and device persistence](docs/mf4/configuration.md)
 - [Local validation record](docs/VALIDATION.md)
 - [Prepared PR description](docs/PR_DESCRIPTION.md)

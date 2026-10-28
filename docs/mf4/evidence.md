@@ -82,11 +82,21 @@ They also check the ioctl number and byte layout. The 712-row evidence test
 models the 686 writes within the exposed subset; 26 rows are deliberately
 excluded (trim/link, `56`, and USB mono inclusion flags). No test replays USB.
 
-Before hardware claims for this fork, validate reads first, then controlled
-changes/restoration on MF4. MF1/MF2 toggle regression checks require those
-devices; they were not available for hardware validation here. Multiple-device,
-disconnect/rollback, topology and power-cycle tests remain separate hardware
-work. The automated suite does not substitute for them.
+## Hardware checks of this fork
+
+On 28 October 2026, the CLI/kernel sources corresponding to `e3315ad`
+were tested with the release Rust CLI and
+temporarily loaded module on one MF4. Identical initial reads, an independent
+decoder comparison and exact full-state restoration preceded digital loopback
+checks of all three mixes. Gain, pan, mute, solo, masters, USB-direct/custom
+routes, request rejection and host snapshot failure/restore paths were checked.
+The [hardware report](hardware-validation.md) records build hashes, the method,
+relative measurements and the limits of the streaming-continuity observation.
+
+MF1/MF2 toggle regression checks require those devices; they were not available
+here. Multiple-device, disconnect/rollback, broader topology and power-cycle
+tests remain separate hardware work. Neither the automated suite nor testing
+one MF4 establishes those behaviors.
 
 ## Deliberate boundaries
 

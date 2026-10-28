@@ -15,16 +15,20 @@ Local validation on 28 October 2026:
 | Evidence/fixture SHA-256 | Pass |
 | PKGBUILD shell syntax and local documentation links | Pass |
 
-The kernel module was compiled only. It was not installed or loaded, and no
-control command was sent to the interface during this work. Release binaries
-were used only for help and offline snapshot inspection/comparison.
+The release CLI and kernel module were also exercised on one MF4 (`1c75:af70`)
+using a temporary module load. Status, all three mixes, routes, request
+rejection, backup failure and a 20-command snapshot restore were checked.
+Digital loopback measurements confirmed gain/pan/mute/solo/master behavior and
+USB-direct/custom routing. Each completed test phase restored all 190 B2 bytes.
+See the [hardware validation report](mf4/hardware-validation.md) for the tested
+commit, build hashes, method, measured results and coverage limits.
 
-CI defines Rust minimum/stable checks and a separate kernel-header build.
-This document records local results, not an assertion that remote CI has run.
+The [CI workflow](https://github.com/srdiogo/mf-cli/actions/workflows/ci.yml)
+runs Rust minimum/stable checks and a separate kernel-header build.
 Nix expressions were updated for the additional source/header/test files;
 Nix and a complete AUR package build were not available locally.
 
-Hardware validation of this fork remains outstanding, including MF1/MF2 legacy
-toggle regressions, MF4 status/control readback, audio behavior, disconnect
-recovery and power-cycle persistence. Prior reference-implementation results
-are documented separately in [the evidence record](mf4/evidence.md).
+MF1/MF2 hardware toggle regressions, multiple-device behavior, disconnect
+recovery and power-cycle persistence remain untested. Prior reference
+implementation results are distinguished from this fork's tests in
+[the evidence record](mf4/evidence.md).

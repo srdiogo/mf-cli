@@ -24,9 +24,13 @@ USB-direct polarity and documents independent addressing of the three mixes.
 
 Validation: Rust tests (including C/Rust validator and ioctl conformance over
 all selectors), capture-backed model tests, snapshot/journal failure tests,
-CLI offline checks, formatting, Clippy and a kernel-module build. The fork has
-not been loaded or exercised on hardware. Audible validation cited in the
-evidence document belongs to the earlier reference implementation only.
+CLI offline checks, formatting, Clippy and a kernel-module build. On one MF4,
+the release CLI/module passed status/readback, request-rejection, backup-failure
+and snapshot-restore checks. Digital loopback tests confirmed gain, pan, mute,
+solo, masters and routing for all three mixes; completed phases restored all
+190 state bytes. The hardware report records the tested commit, hashes,
+measurements and limits. MF1/MF2 hardware, disconnect recovery and power-cycle
+persistence remain untested.
 
 Known boundaries: no calibrated meters, trim writes, analog mono/stereo
 conversion, `56` activation, LEDs or copy-mix policy. Restores apply only mapped
