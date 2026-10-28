@@ -15,7 +15,10 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../src
-      ../99-minifuse.rules
+      ../tests
+      ../docs/mf4
+      ../kmod/mf4_protocol.h
+      ../70-minifuse.rules
     ];
   };
 
@@ -25,7 +28,7 @@ rustPlatform.buildRustPackage {
   buildInputs = [ libusb1 ];
 
   postInstall = ''
-    install -Dm644 99-minifuse.rules $out/lib/udev/rules.d/99-minifuse.rules
+    install -Dm644 70-minifuse.rules $out/lib/udev/rules.d/70-minifuse.rules
   '';
 
   meta = {

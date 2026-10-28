@@ -22,7 +22,7 @@ package() {
 
   # 1. Install userspace binaries, rules, and licenses
   install -Dm755 "target/release/mf-cli" "$pkgdir/usr/bin/mf-cli"
-  install -Dm644 "99-minifuse.rules" "$pkgdir/usr/lib/udev/rules.d/99-minifuse.rules"
+  install -Dm644 "70-minifuse.rules" "$pkgdir/usr/lib/udev/rules.d/70-minifuse.rules"
   install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   # 2. Install the DKMS kernel module source
@@ -30,6 +30,7 @@ package() {
   install -dm755 "$dkms_dir"
 
   install -Dm644 kmod/minifuse_mod.c "$dkms_dir/minifuse_mod.c"
+  install -Dm644 kmod/mf4_protocol.h "$dkms_dir/mf4_protocol.h"
   install -Dm644 kmod/Makefile "$dkms_dir/Makefile"
   install -Dm644 kmod/dkms.conf "$dkms_dir/dkms.conf"
 

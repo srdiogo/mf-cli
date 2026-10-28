@@ -25,8 +25,9 @@ in
         default = true;
         description = ''
           Build and load the minifuse_mod kernel module, which lets mf-cli
-          toggle the device without interrupting the audio stream. With this
-          off, mf-cli falls back to userspace USB control.
+          control the device while keeping the audio driver bound. With this
+          off, legacy toggles use userspace USB control; MF4 status, mixer and
+          configuration commands require the module and will not fall back.
         '';
       };
 

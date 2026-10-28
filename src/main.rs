@@ -1,238 +1,373 @@
-use clap::{CommandFactory, Parser, error::ErrorKind};
-use rusb::{DeviceHandle, GlobalContext};
-use std::{fs, path::Path, process, thread::sleep, time::Duration};
+// SPDX-License-Identifier: MIT
+mod config;
+mod legacy;
+mod mixer;
+mod model;
+mod state;
+mod transport;
 
-const VID: u16 = 0x1c75;
-const PID_MF1: u16 = 0xaf80;
-const PID_MF1_MSD: u16 = 0xaf82;
-const PID_MF2: u16 = 0xaf90;
-const PID_MF4: u16 = 0xaf70;
-const SYSFS_PATH: &str = "/dev/minifuse_cmd";
+use clap::{Parser, Subcommand, ValueEnum};
+use config::Snapshot;
+use state::{Change, Mix, State};
+use std::path::PathBuf;
 
-const AFTER_HELP: &str = "\
-Targets:
-  MiniFuse 1/2  inst, 48v, monitor
-  MiniFuse 4    inst1 (or inst), inst2, 48v
-
-Examples:
-  mf-cli inst on
-  mf-cli 48v on monitor off
-  mf-cli inst1 on inst2 off 48v on";
-
-/// Toggle hardware settings on an Arturia MiniFuse.
 #[derive(Parser)]
-#[command(version, after_help = AFTER_HELP)]
+#[command(
+    name = "mf-cli",
+    version,
+    about = "Control Arturia MiniFuse hardware and the MiniFuse 4 mixer",
+    after_help = "Legacy toggles remain available: mf-cli <target> <on|off> [<target> <on|off> ...]\nMiniFuse 1/2: inst, 48v, monitor. MiniFuse 4: inst/inst1, inst2, 48v.\nNew status/mixer/config commands require the updated kernel module; use config show for offline snapshots."
+)]
 struct Cli {
-    /// Pairs of a target and its state (on or off)
-    #[arg(required = true, num_args = 2.., value_names = ["TARGET", "STATE"])]
-    settings: Vec<String>,
+    /// Directory for durable backups and operation records before mixer changes
+    #[arg(long, global = true)]
+    backup_dir: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Commands,
 }
 
-#[derive(Clone, Copy)]
-enum Model {
-    MiniFuse1,
-    MiniFuse2,
-    MiniFuse4,
+#[derive(Subcommand)]
+enum Commands {
+    /// Read MiniFuse 4 mixer configuration (not signal meters)
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Adjust one MiniFuse 4 internal mix
+    Mixer {
+        #[arg(value_enum)]
+        mix: Mix,
+        #[command(subcommand)]
+        action: MixerAction,
+    },
+    /// Route out12 (usb12/mix), out34 (usb34/mix), or loopback (usb56/mix/out12/out34)
+    Route {
+        #[arg(value_enum)]
+        mix: Mix,
+        source: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Save, inspect, compare or restore host-side mixer configuration files
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
-impl Model {
-    fn from_pid(pid: u16) -> Option<Model> {
-        match pid {
-            PID_MF1 | PID_MF1_MSD => Some(Model::MiniFuse1),
-            PID_MF2 => Some(Model::MiniFuse2),
-            PID_MF4 => Some(Model::MiniFuse4),
-            _ => None,
+#[derive(Clone, Copy, ValueEnum)]
+enum Toggle {
+    On,
+    Off,
+}
+impl Toggle {
+    fn enabled(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+#[derive(Subcommand)]
+enum MixerAction {
+    /// Set a source; pan is 0 (left)..1 (right), level is -60..12 dB or -inf
+    Channel {
+        source: String,
+        #[arg(long, allow_hyphen_values = true)]
+        level: Option<String>,
+        #[arg(long)]
+        pan: Option<f64>,
+        #[arg(long, value_enum)]
+        mute: Option<Toggle>,
+        #[arg(long, value_enum)]
+        solo: Option<Toggle>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Set master level (-64..0 dB or -inf)
+    Master {
+        #[arg(allow_hyphen_values = true)]
+        level: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Include/remove an analog mono source or a USB stereo pair
+    Source {
+        source: String,
+        #[arg(value_enum)]
+        state: Toggle,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Save a new snapshot; existing files are never overwritten
+    Save { file: PathBuf },
+    /// Inspect a snapshot offline, without opening USB or the kernel node
+    Show {
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare restorable fields with live state without writing USB
+    Diff {
+        file: PathBuf,
+        #[arg(long)]
+        against: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        mix: Option<Mix>,
+    },
+    /// Restore captured writable mixer fields; opaque bytes and trims stay unchanged
+    Restore {
+        file: PathBuf,
+        #[arg(long, value_enum)]
+        mix: Option<Mix>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+fn show(device: &transport::Device, state: &State, json: bool) -> Result<(), String> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "device": device, "state": state.decoded(), "payload_hex": state::hex(&state.0) })).map_err(|e| e.to_string())?);
+    } else {
+        println!(
+            "MiniFuse 4 {:04x}:{:04x} (bus {}, address {})",
+            device.vendor_id, device.product_id, device.bus, device.address
+        );
+        for mix in Mix::ALL {
+            let i = mix.index();
+            println!(
+                "{}: route={}, master={} dB",
+                mix.name(),
+                mix.route_name(state.word(176 + i * 2)),
+                state
+                    .db(138 + i * 2)
+                    .map(|x| format!("{x:.3}"))
+                    .unwrap_or("-inf".into())
+            );
+            for (ch, name) in state::CHANNEL_NAMES.iter().enumerate().take(mix.channels()) {
+                let value = |offset| {
+                    state
+                        .db(offset)
+                        .map(|x| format!("{x:.3}"))
+                        .unwrap_or("-inf".into())
+                };
+                println!(
+                    "  {name:7} L={:>8} R={:>8} dB mute={} solo={}",
+                    value(18 + i * 40 + ch * 2),
+                    value(38 + i * 40 + ch * 2),
+                    state.word(152 + i * 2) & (1 << ch) != 0,
+                    state.word(158 + i * 2) & (1 << ch) != 0
+                );
+            }
         }
+        println!(
+            "Stored gains only; signal meters are not implemented. Input trims are available in --json."
+        );
     }
+    Ok(())
+}
 
-    fn name(self) -> &'static str {
-        match self {
-            Model::MiniFuse1 => "MiniFuse 1",
-            Model::MiniFuse2 => "MiniFuse 2",
-            Model::MiniFuse4 => "MiniFuse 4",
+fn plan_json(state: &State, plan: &[Change], saved: Option<&State>) -> Result<(), String> {
+    let predicted = state::predict(state, plan)?;
+    let ignored: Vec<usize> = saved
+        .map(|s| {
+            (0..state::STATE_SIZE)
+                .filter(|&i| s.0[i] != predicted.0[i])
+                .collect()
+        })
+        .unwrap_or_default();
+    println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "usb_write_count": plan.len(), "changes": plan,
+        "predicted_after_hex": state::hex(&predicted.0), "unrestored_byte_offsets": ignored,
+        "note": "Only mapped mixer fields are restorable. Opaque bytes, input trims, INST, 48 V and LED settings are not replayed." })).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+fn run(cli: Cli) -> Result<(), String> {
+    // Validate offline files before opening hardware. Show never opens a node.
+    let saved = match &cli.command {
+        Commands::Config {
+            action:
+                ConfigAction::Diff {
+                    file,
+                    against: Some(against),
+                    mix,
+                },
+        } => {
+            let current = Snapshot::load(against)?.state()?;
+            let saved = Snapshot::load(file)?.state()?;
+            return plan_json(
+                &current,
+                &mixer::restore(&current, &saved, *mix)?,
+                Some(&saved),
+            );
         }
-    }
-
-    fn targets(self) -> &'static str {
-        match self {
-            Model::MiniFuse4 => "inst1, inst2 or 48v",
-            _ => "inst, 48v or monitor",
+        Commands::Config {
+            action: ConfigAction::Show { file, json },
+        } => {
+            let snapshot = Snapshot::load(file)?;
+            return show(&snapshot.device, &snapshot.state()?, *json);
         }
-    }
-}
-
-/// One requested change, already validated against the connected model.
-struct Setting<'a> {
-    target: &'a str,
-    selector: u16,
-    enable: bool,
-}
-
-/// Maps a target name to the control transfer's wValue, which is
-/// `(feature << 8) | channel`. Returns `None` when the model lacks the target.
-fn parse_selector(model: Model, target: &str) -> Option<u16> {
-    match model {
-        Model::MiniFuse4 => match target {
-            "inst" | "inst1" => Some(0x0000),
-            "inst2" => Some(0x0001),
-            "48v" => Some(0x0300),
-            _ => None,
-        },
-        _ => match target {
-            "inst" => Some(0x0000),
-            "48v" => Some(0x0400),
-            "monitor" => Some(0x0500),
-            _ => None,
-        },
-    }
-}
-
-fn parse_state(state: &str) -> Option<bool> {
-    match state {
-        "on" => Some(true),
-        "off" => Some(false),
+        Commands::Config {
+            action: ConfigAction::Diff { file, .. } | ConfigAction::Restore { file, .. },
+        } => Some(Snapshot::load(file)?.state()?),
         _ => None,
+    };
+    let (mutating, dry_run) = match &cli.command {
+        Commands::Mixer { action, .. } => (
+            true,
+            match action {
+                MixerAction::Channel { dry_run, .. }
+                | MixerAction::Master { dry_run, .. }
+                | MixerAction::Source { dry_run, .. } => *dry_run,
+            },
+        ),
+        Commands::Route { dry_run, .. } => (true, *dry_run),
+        Commands::Config {
+            action: ConfigAction::Restore { dry_run, .. },
+        } => (true, *dry_run),
+        _ => (false, false),
+    };
+    let mut kernel = transport::Kernel::open(mutating && !dry_run)?;
+    let (device, state) = kernel.read()?;
+    let changes = match cli.command {
+        Commands::Status { json } => return show(&device, &state, json),
+        Commands::Config {
+            action: ConfigAction::Save { file },
+        } => {
+            Snapshot::new(device, &state).save(&file)?;
+            println!(
+                "Saved {}. This is a host snapshot; no USB write or device-flash save command was sent.",
+                file.display()
+            );
+            return Ok(());
+        }
+        Commands::Config {
+            action: ConfigAction::Diff { mix, .. },
+        } => {
+            return plan_json(
+                &state,
+                &mixer::restore(&state, saved.as_ref().unwrap(), mix)?,
+                saved.as_ref(),
+            );
+        }
+        Commands::Config {
+            action: ConfigAction::Restore { mix, .. },
+        } => mixer::restore(&state, saved.as_ref().unwrap(), mix)?,
+        Commands::Mixer {
+            mix,
+            action:
+                MixerAction::Channel {
+                    source,
+                    level,
+                    pan,
+                    mute,
+                    solo,
+                    ..
+                },
+        } => mixer::channel(
+            &state,
+            mix,
+            &source,
+            level.as_deref(),
+            pan,
+            mute.map(Toggle::enabled),
+            solo.map(Toggle::enabled),
+        )?,
+        Commands::Mixer {
+            mix,
+            action: MixerAction::Master { level, .. },
+        } => mixer::master(mix, &level)?,
+        Commands::Mixer {
+            mix,
+            action:
+                MixerAction::Source {
+                    source,
+                    state: included,
+                    ..
+                },
+        } => mixer::source(&state, mix, &source, included.enabled())?,
+        Commands::Route { mix, source, .. } => mixer::route(mix, &source)?,
+        Commands::Config {
+            action: ConfigAction::Show { .. },
+        } => unreachable!(),
+    };
+    let changes = state::changed(&state, changes)?;
+    if dry_run {
+        return plan_json(&state, &changes, saved.as_ref());
     }
-}
-
-/// Prints `message` as an error and exits with status 1.
-fn fail(message: impl std::fmt::Display) -> ! {
-    eprintln!("error: {message}");
-    process::exit(1);
+    if let Some(saved) = &saved {
+        let expected = state::predict(&state, &changes)?;
+        let ignored = (0..state::STATE_SIZE)
+            .filter(|&i| saved.0[i] != expected.0[i])
+            .count();
+        if ignored > 0 {
+            eprintln!(
+                "note: {ignored} snapshot bytes are outside the selected/restorable fields and will retain their live values; inspect config diff for offsets."
+            );
+        }
+    }
+    let dir = cli.backup_dir.unwrap_or_else(config::default_backup_dir);
+    match config::apply(&mut kernel, &device, &state, changes, &dir)? {
+        Some(path) => println!(
+            "MiniFuse 4: change verified by complete B2 readback. Operation record: {}",
+            path.display()
+        ),
+        None => println!("MiniFuse 4: already matches; no USB writes sent."),
+    }
+    Ok(())
 }
 
 fn main() {
-    let cli = Cli::parse();
-    let mut cmd = Cli::command();
-
-    let pairs = cli.settings.chunks_exact(2);
-    if !pairs.remainder().is_empty() {
-        cmd.error(
-            ErrorKind::WrongNumberOfValues,
-            "every target needs a state (on or off)",
+    let arg = std::env::args().nth(1).unwrap_or_default();
+    if !arg.starts_with("--backup-dir=")
+        && !matches!(
+            arg.as_str(),
+            "status"
+                | "mixer"
+                | "route"
+                | "config"
+                | "help"
+                | "--help"
+                | "-h"
+                | "--version"
+                | "-V"
+                | "--backup-dir"
         )
-        .exit();
+    {
+        legacy::run();
+        return;
     }
-
-    let Some(model) = detect_model() else {
-        fail("no MiniFuse found");
-    };
-
-    let mut settings = Vec::new();
-    for pair in pairs {
-        let (target, state) = (pair[0].as_str(), pair[1].as_str());
-        let Some(selector) = parse_selector(model, target) else {
-            cmd.error(
-                ErrorKind::InvalidValue,
-                format!(
-                    "{} has no target '{target}', use {}",
-                    model.name(),
-                    model.targets()
-                ),
-            )
-            .exit();
-        };
-        let Some(enable) = parse_state(state) else {
-            cmd.error(
-                ErrorKind::InvalidValue,
-                format!("invalid state '{state}' for {target}, use on or off"),
-            )
-            .exit();
-        };
-        settings.push(Setting {
-            target,
-            selector,
-            enable,
-        });
-    }
-
-    if Path::new(SYSFS_PATH).exists() {
-        send_via_kernel_module(&settings);
-    } else {
-        eprintln!("warning: kernel module not loaded, using userspace USB (audio may drop out)");
-        send_via_usb(&settings);
-    }
-
-    let summary: Vec<String> = settings
-        .iter()
-        .map(|s| format!("{} {}", s.target, if s.enable { "on" } else { "off" }))
-        .collect();
-    println!("{}: {}", model.name(), summary.join(", "));
-}
-
-/// Sends each setting through the minifuse_mod device node, which leaves the
-/// audio stream running. Exits on the first write the module rejects.
-fn send_via_kernel_module(settings: &[Setting]) {
-    for setting in settings {
-        let cmd = format!("{:04x} {}", setting.selector, setting.enable as u8);
-        if let Err(e) = fs::write(SYSFS_PATH, &cmd) {
-            fail(format!("kernel module rejected {}: {e}", setting.target));
-        }
-        // Give the device time to process each command before the next one.
-        sleep(Duration::from_millis(50));
+    if let Err(error) = run(Cli::parse()) {
+        eprintln!("error: {error}");
+        std::process::exit(1);
     }
 }
 
-/// Sends each setting with libusb. Claiming the interface detaches the audio
-/// driver, so playback stops until the device reset at the end.
-fn send_via_usb(settings: &[Setting]) {
-    let mut handle = find_minifuse().unwrap_or_else(|e| fail(format!("cannot open MiniFuse: {e}")));
-
-    for setting in settings {
-        if let Err(e) = toggle_feature(&mut handle, setting.selector, setting.enable) {
-            fail(format!("failed to set {}: {e}", setting.target));
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    #[test]
+    fn parses_negative_levels_and_offline_commands() {
+        for args in [
+            vec![
+                "mf-cli", "mixer", "out12", "channel", "analog1", "--level", "-6", "--mute", "on",
+            ],
+            vec!["mf-cli", "mixer", "loopback", "master", "-inf", "--dry-run"],
+            vec!["mf-cli", "config", "show", "test.json", "--json"],
+            vec![
+                "mf-cli",
+                "config",
+                "restore",
+                "test.json",
+                "--mix",
+                "out34",
+                "--dry-run",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
         }
+        assert!(Cli::try_parse_from(["mf-cli", "mixer", "out56", "master", "0"]).is_err());
     }
-
-    let _ = handle.reset();
-}
-
-fn detect_model() -> Option<Model> {
-    let devices = rusb::devices().ok()?;
-    for device in devices.iter() {
-        let device_desc = device.device_descriptor().ok()?;
-        if device_desc.vendor_id() != VID {
-            continue;
-        }
-        if let Some(model) = Model::from_pid(device_desc.product_id()) {
-            return Some(model);
-        }
-    }
-    None
-}
-
-/// Opens the first supported MiniFuse. Returns the last open error, such as a
-/// permission error when the udev rule is missing, or `NoDevice` if none is
-/// connected.
-fn find_minifuse() -> Result<DeviceHandle<GlobalContext>, rusb::Error> {
-    let mut error = rusb::Error::NoDevice;
-    for device in rusb::devices()?.iter() {
-        let device_desc = device.device_descriptor()?;
-        if device_desc.vendor_id() == VID && Model::from_pid(device_desc.product_id()).is_some() {
-            match device.open() {
-                Ok(handle) => return Ok(handle),
-                Err(e) => error = e,
-            }
-        }
-    }
-    Err(error)
-}
-
-fn toggle_feature(
-    handle: &mut DeviceHandle<GlobalContext>,
-    selector: u16,
-    enable: bool,
-) -> Result<(), rusb::Error> {
-    let _ = handle.set_auto_detach_kernel_driver(true);
-
-    if let Err(e) = handle.claim_interface(0) {
-        eprintln!("warning: could not claim interface 0: {e}");
-    }
-
-    let data = [enable as u8, 0];
-    let result = handle.write_control(0x21, 34, selector, 0, &data, Duration::from_millis(200));
-
-    sleep(Duration::from_millis(100));
-    let _ = handle.release_interface(0);
-    result.map(|_| ())
 }
