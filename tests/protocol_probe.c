@@ -22,6 +22,8 @@ int main(void)
 	_Static_assert(offsetof(struct mf4_transaction, after) == 838, "state offset");
 	_Static_assert(offsetof(struct mf4_transaction, flags) == 1030, "flags offset");
 	_Static_assert(sizeof(struct mf4_capabilities) == 16, "capabilities ABI size");
+	_Static_assert(sizeof(struct mf4_meter_record) == 80, "meter record ABI size");
+	_Static_assert(offsetof(struct mf4_meter_record, data) == 16, "meter data offset");
 	_Static_assert(offsetof(struct mf4_capabilities, flags) == 8, "capability flags offset");
 	assert(mf_legacy_allowed(0xaf80, 0x0400));
 	assert(mf_legacy_allowed(0xaf82, 0x0500));
@@ -43,7 +45,8 @@ int main(void)
 			}
 		}
 	}
-	printf("%lu %llu %lu\n", (unsigned long)MF4_IOCTL_APPLY,
-	       (unsigned long long)hash, (unsigned long)MF4_IOCTL_CAPABILITIES);
+	printf("%lu %llu %lu %lu\n", (unsigned long)MF4_IOCTL_APPLY,
+	       (unsigned long long)hash, (unsigned long)MF4_IOCTL_CAPABILITIES,
+	       (unsigned long)MF4_IOCTL_METERS);
 	return 0;
 }

@@ -47,6 +47,19 @@ static inline int mf_legacy_allowed(__u16 pid, __u16 selector)
 }
 
 #define MF4_CAP_INPUT_SWITCHES 1
+#define MF4_CAP_METER_QUERY 2
+#define MF4_METER_SIZE 64
+struct mf4_meter_record {
+	__u8 magic[4];
+	__le16 version;
+	__le16 vendor;
+	__le16 product;
+	__le16 bus;
+	__le16 address;
+	__le16 length;
+	__u8 data[MF4_METER_SIZE];
+} __attribute__((packed));
+#define MF4_IOCTL_METERS _IOR('M', 0x43, struct mf4_meter_record)
 struct mf4_capabilities {
 	__u8 magic[4];
 	__le16 version;

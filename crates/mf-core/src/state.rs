@@ -309,6 +309,7 @@ mod tests {
             libc::_IOWR::<[u8; crate::transport::TX_SIZE]>(b'M' as u32, 0x41) as u64
         );
         assert_eq!(parts[2], libc::_IOR::<[u8; 16]>(b'M' as u32, 0x42) as u64);
+        assert_eq!(parts[3], libc::_IOR::<[u8; 80]>(b'M' as u32, 0x43) as u64);
         let mut hash = 14695981039346656037u64;
         let mut fold = |v: u16| {
             hash = (hash ^ u64::from(v)).wrapping_mul(1099511628211);

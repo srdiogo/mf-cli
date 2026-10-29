@@ -81,8 +81,8 @@ their previous behavior.
 
 MF1/MF2 advertise no mixer/snapshot capability and never receive inferred B2
 queries. MF4 decodes the three input switches from B2; MF1/MF2 do not inherit those
-fields or selectors. Signal meters and physical-logo-button events remain
-unavailable.
+fields or selectors. MF4 signal meters use a fixed read-only C2 query when the active module
+advertises it. Physical-logo-button events remain unavailable.
 Capabilities describe potentially supported membership; the planner also checks
 the actual topology. Device readback still does not prove nonvolatile saving.
 
@@ -108,3 +108,19 @@ Input-switch tests cover exact bit preservation, reverse rollback values,
 overlap rejection, restore exclusions, MF1/MF2 gating, C/Rust ABI agreement and
 rejection against a module without the new feature. Physical readback evidence is
 recorded in [the input-switch report](mf4/input-switches.md).
+
+## Signal meters
+
+`Kernel::meters()` returns the USB device record and typed `Meters`, independently
+of configuration state. The 64-byte C2 payload contains 16 little-endian unsigned
+peak magnitudes with full scale `2^31`: Analog 1–4, USB 1–6, then the left/right
+outputs of out12, out34 and loopback mixes. `sources_dbfs` and `mixes_dbfs` use
+`20 * log10(magnitude / 2^31)`; zero is `None`, serialized as null. Values above
+full scale and malformed headers are rejected. Mix peaks follow master gain
+and precede destination route selection; they are not guaranteed to represent
+physical outputs when a destination bypasses its custom mix.
+
+`ModuleCapabilities.signal_meters` gates the additive 80-byte read-only ioctl.
+Older modules do not advertise it. MF1/MF2 do not inherit this layout. There are
+no meter writes, snapshots, journals or firmware changes. See
+[calibration and coverage](mf4/meters.md).

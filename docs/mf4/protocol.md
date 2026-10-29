@@ -9,6 +9,7 @@ state layout. See [evidence and attribution](evidence.md) for sources and limits
 
 | Operation | bmRequestType | bRequest | wValue | wIndex | Length |
 |---|---:|---:|---|---:|---:|
+| Read peaks | `0xA1` | `0xC2` | `0` | `0` | 64 bytes |
 | Read state | `0xA1` | `0xB2` | `0` | `0` | 190 bytes |
 | Set one parameter | `0x21` | `0x22` | `(feature << 8) \| channel_or_pair` | `0` | 2 bytes |
 
@@ -140,3 +141,18 @@ in reverse order and separately verified. These requests are not atomic; the
 device can briefly pass through intermediate settings. External control clients
 are not covered by the module's mutex. Concurrent changes may cause rejection
 or readback failure; rollback cannot be guaranteed after disconnection.
+
+## Signal peak readback
+
+C2 holds 16 LE32 magnitudes: Analog 1–4, USB 1–6, and stereo out12/out34/loopback
+mix outputs. Full scale is `2^31`; zero is silence. Conversion uses
+`20 * log10(value / 2^31)` dBFS. Mix peaks are after master gain and before
+destination routing; they remain custom-mix peaks when USB direct is selected.
+
+Module capability flag bit 1 advertises `_IOR('M', 0x43, struct mf4_meter_record)`.
+The packed 80-byte record has the same 16-byte identity header as status, with
+magic `MF4M`, version 1 and length 64, followed by C2. Read access is required.
+The module fixes every USB field, uses the shared control mutex, rejects multiple
+MF4 devices and leaves audio-driver bindings in place. No caller-supplied USB
+request, selector or firmware operation is accepted. Calibration and untested
+cases are recorded in [the meter report](meters.md).

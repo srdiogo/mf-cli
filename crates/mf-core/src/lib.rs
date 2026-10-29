@@ -3,6 +3,7 @@
 //! Execution retains durable backups and complete-state kernel verification.
 mod config;
 mod error;
+mod meters;
 mod mixer;
 mod model;
 mod state;
@@ -10,6 +11,7 @@ mod transport;
 
 pub use config::{Snapshot, default_backup_dir};
 pub use error::{Error, ErrorKind};
+pub use meters::Meters;
 pub use model::{MF4_PID, Model, VID};
 pub use state::{CHANNEL_NAMES, Inputs, Mix, STATE_SIZE, State, hex};
 pub use transport::{Device, Kernel, ModuleCapabilities};
@@ -121,7 +123,7 @@ impl Model {
             host_snapshots: mixer,
             switch_readback: mixer,
             input_switches: mixer,
-            signal_meters: false,
+            signal_meters: mixer,
             control_panel_button: false,
             mixes: if mixer {
                 Mix::ALL
@@ -151,7 +153,7 @@ impl Model {
             },
             limitations: vec![
                 if mixer {
-                    "Input writes require a module advertising verified input-switch transactions; meters and button events are unavailable."
+                    "Input writes and signal meters require matching module features; logo-button events are unavailable."
                 } else {
                     "Switch readback, signal meters and button events are unavailable."
                 },
