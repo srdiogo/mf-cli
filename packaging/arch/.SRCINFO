@@ -1,0 +1,22 @@
+pkgbase = mf-cli-platform
+	pkgdesc = MiniFuse CLI and DKMS transport with verified MF4 controls and meters
+	pkgver = 0.2.6.r12.g8f12a01
+	pkgrel = 1
+	url = https://github.com/srdiogo/mf-cli
+	arch = x86_64
+	license = MIT
+	license = GPL-2.0-only
+	makedepends = rust>=1.85
+	makedepends = pkgconf
+	depends = glibc
+	depends = libgcc
+	depends = libusb
+	depends = dkms
+	provides = mf-cli=0.2.6
+	provides = minifuse-transport=1
+	conflicts = mf-cli
+	options = !debug
+	source = mf-cli-platform-8f12a01c2b71a545b129d94316321777b149304e.tar.gz::https://github.com/srdiogo/mf-cli/archive/8f12a01c2b71a545b129d94316321777b149304e.tar.gz
+	sha256sums = 9e90e98977c5f8db976b60d0f44ba3bb462dd3ec44e9fc09d7136ab508501cc6
+
+pkgname = mf-cli-platform

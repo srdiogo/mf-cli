@@ -33,3 +33,21 @@ jobs:
           for kdir in /usr/src/linux-headers-*-generic; do
             make -C kmod KDIR="$kdir" W=1
           done
+
+  arch-package:
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    steps:
+      - run: pacman -Syu --noconfirm base-devel git rust pkgconf libusb dkms
+      - uses: actions/checkout@v4
+      - name: Build transport package without loading a module
+        run: |
+          useradd --create-home builder
+          install -d -o builder -g builder /tmp/package
+          cp packaging/arch/PKGBUILD /tmp/package/PKGBUILD
+          chown builder:builder /tmp/package/PKGBUILD
+          runuser -u builder -- sh -c 'cd /tmp/package && makepkg --cleanbuild --noconfirm'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mf-cli-platform-arch-preview
+          path: /tmp/package/*.pkg.tar.zst
