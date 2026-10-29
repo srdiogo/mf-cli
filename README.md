@@ -74,7 +74,7 @@ Use this fork and branch as the flake input:
     type = "github";
     owner = "srdiogo";
     repo = "mf-cli";
-    ref = "feature/mf4-mixer-state";
+    ref = "master";
   };
   outputs = { nixpkgs, mf-cli, ... }: {
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
@@ -175,8 +175,8 @@ restore scope, journaling and crash behavior.
 
 ## Shared library
 
-The workspace includes the blocking `mf-core` library. The CLI and future
-session service use the same device model, immutable plans, snapshot schema
+The workspace includes the blocking `mf-core` library. The CLI and separate
+[session service](https://github.com/srdiogo/mf-service) use the same device model, immutable plans, snapshot schema
 and verified execution path. The core has no CLI parser, async runtime or GUI
 dependency. See [the public API and compatibility contract](docs/core.md).
 
@@ -207,3 +207,18 @@ device-storage-writing or firmware-update interface is provided.
 Rust userspace code and helper material: [MIT](LICENSE).
 Kernel module and its shared protocol header: [GPL-2.0-only](kmod/LICENSE).
 See the evidence document for attribution to the upstream and MF4 research work.
+
+## Standalone application and distribution preview
+
+The [Qt application](https://github.com/srdiogo/minifuse-control) and
+[session service](https://github.com/srdiogo/mf-service) are separate projects.
+This repository owns the shared core and kernel transport; no GUI is embedded
+in the CLI. MF4 input switches and C2 peak meters are documented in
+[the input report](docs/mf4/input-switches.md) and
+[the meter report](docs/mf4/meters.md).
+
+A checksummed Arch preview recipe for the fork is maintained under
+[packaging/arch](packaging/arch/README.md). It is separate from the upstream
+release recipe at the repository root. The preview packages DKMS sources and
+active-session access rules without reloading a running module, installing a
+boot-load entry or enabling application/service startup.
