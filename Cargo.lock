@@ -161,8 +161,16 @@ name = "mf-cli"
 version = "0.2.6"
 dependencies = [
  "clap",
- "libc",
+ "mf-core",
  "rusb",
+ "serde_json",
+]
+
+[[package]]
+name = "mf-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]

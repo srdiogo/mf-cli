@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 use crate::{
+    Backend, Error, ErrorKind, Plan,
     model::{Model, VID},
     state::{Change, MAX_CHANGES, STATE_SIZE, State, predict},
 };
@@ -34,15 +35,6 @@ impl Device {
     }
 }
 
-pub trait Backend {
-    fn apply(
-        &mut self,
-        device: &Device,
-        before: &State,
-        changes: &[Change],
-    ) -> Result<State, String>;
-}
-
 pub struct Kernel {
     file: File,
 }
@@ -54,15 +46,16 @@ fn put(data: &mut [u8], offset: usize, value: u16) {
     data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-pub fn decode_record(data: &[u8]) -> Result<(Device, State), String> {
+pub fn decode_record(data: &[u8]) -> Result<(Device, State), Error> {
     if data.len() != 206
         || &data[..4] != b"MF4S"
         || word(data, 4) != 1
         || word(data, 14) != STATE_SIZE as u16
     {
-        return Err(
-            "Unsupported kernel status record; rebuild/reload the matching mf-cli module".into(),
-        );
+        return Err(Error::new(
+            ErrorKind::ModuleIncompatible,
+            "Unsupported kernel status record; rebuild/reload the matching mf-cli module",
+        ));
     }
     let device = Device {
         vendor_id: word(data, 6),
@@ -70,20 +63,27 @@ pub fn decode_record(data: &[u8]) -> Result<(Device, State), String> {
         bus: word(data, 10),
         address: word(data, 12),
     };
-    device.require_mf4()?;
+    device
+        .require_mf4()
+        .map_err(|e| Error::new(ErrorKind::UnsupportedCapability, e))?;
     let mut state = [0; STATE_SIZE];
     state.copy_from_slice(&data[16..]);
     Ok((device, State(state)))
 }
 
 impl Kernel {
-    pub fn open(write: bool) -> Result<Self, String> {
+    pub fn open(write: bool) -> Result<Self, Error> {
         OpenOptions::new().read(true).write(write).open(NODE).map(|file| Self { file })
-            .map_err(|e| format!("Cannot open {NODE}: {e}. Status/mixer/config require the updated kernel module and device access; no USB fallback is used."))
+            .map_err(|e| Error::io(e, &format!("Cannot open {NODE}; status/mixer/config require the matching kernel module and device access; no USB fallback is used")))
     }
-    pub fn read(&mut self) -> Result<(Device, State), String> {
+    pub fn read(&mut self) -> Result<(Device, State), Error> {
         let mut data = [0; 206];
-        self.file.read_exact(&mut data).map_err(|e| format!("Cannot read MF4 status: {e}. Only PID af70 is supported; an older loaded module must be rebuilt/reloaded."))?;
+        self.file.read_exact(&mut data).map_err(|e| {
+            Error::io(
+                e,
+                "Cannot read MF4 status; only PID af70 and the matching module are supported",
+            )
+        })?;
         decode_record(&data)
     }
 }
@@ -112,12 +112,10 @@ pub fn encode_transaction(
 }
 
 impl Backend for Kernel {
-    fn apply(
-        &mut self,
-        device: &Device,
-        before: &State,
-        changes: &[Change],
-    ) -> Result<State, String> {
+    fn transact(&mut self, plan: &Plan) -> Result<State, Error> {
+        let device = &plan.device;
+        let before = &plan.before;
+        let changes = &plan.changes;
         let expected = predict(before, changes)?;
         let mut data = encode_transaction(device, before, changes)?;
         let request = libc::_IOWR::<[u8; TX_SIZE]>(b'M' as u32, 0x41);
@@ -140,10 +138,40 @@ impl Backend for Kernel {
             } else {
                 "The transaction was rejected or failed before rollback was available; refresh status."
             };
-            return Err(format!("MF4 transaction failed: {error}. {recovery}"));
+            let mut failure = Error::io(error, "MF4 transaction failed");
+            failure.message.push_str(&format!(". {recovery}"));
+            failure.rollback_attempted = flags & 1 != 0;
+            failure.rollback_verified = flags & 2 != 0;
+            failure.device_write_attempted = if failure.rollback_attempted {
+                Some(true)
+            } else if matches!(
+                failure.kind,
+                ErrorKind::AccessDenied
+                    | ErrorKind::AmbiguousDevice
+                    | ErrorKind::ModuleIncompatible
+                    | ErrorKind::UnsupportedCapability
+                    | ErrorKind::DeviceChanged
+                    | ErrorKind::StaleState
+            ) {
+                Some(false)
+            } else {
+                // A failed copy/USB/read call does not prove non-dispatch.
+                None
+            };
+            if flags & 4 != 0 {
+                let mut after = [0; STATE_SIZE];
+                after.copy_from_slice(&data[AFTER..AFTER + STATE_SIZE]);
+                failure.after_state = Some(Box::new(State(after)));
+            }
+            return Err(failure);
         }
         if word(&data, FLAGS) & 4 == 0 || data[AFTER..AFTER + STATE_SIZE] != expected.0 {
-            return Err("Kernel response did not confirm the predicted complete B2 state".into());
+            let mut error = Error::new(
+                ErrorKind::ReadbackFailed,
+                "Kernel response did not confirm the predicted complete B2 state",
+            );
+            error.device_write_attempted = Some(true);
+            return Err(error);
         }
         Ok(expected)
     }

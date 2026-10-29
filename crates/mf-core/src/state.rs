@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const STATE_SIZE: usize = 190;
 pub const CHANNEL_NAMES: [&str; 10] = [
     "analog1", "analog2", "analog3", "analog4", "usb1", "usb2", "usb3", "usb4", "usb5", "usb6",
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mix {
     Out12,
     Out34,
@@ -136,7 +136,7 @@ pub fn level_pan(left: Option<f64>, right: Option<f64>) -> (Option<f64>, Option<
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
-pub struct Change {
+pub(crate) struct Change {
     pub selector: u16,
     pub value: u16,
 }
@@ -263,7 +263,7 @@ mod tests {
                 "-Wextra",
                 "-Werror",
                 "-O2",
-                "tests/protocol_probe.c",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/protocol_probe.c"),
                 "-o",
             ])
             .arg(&output)
@@ -311,7 +311,7 @@ mod tests {
         let mut state = fixture();
         let mut supported = 0;
         let mut excluded = 0;
-        for line in include_str!("../docs/mf4/control-writes.csv")
+        for line in include_str!("../../../docs/mf4/control-writes.csv")
             .lines()
             .skip(1)
         {
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(excluded, 26);
     }
     pub fn fixture() -> State {
-        State::from_hex(include_str!("../tests/fixtures/windows-b2.hex").trim()).unwrap()
+        State::from_hex(include_str!("../../../tests/fixtures/windows-b2.hex").trim()).unwrap()
     }
     #[test]
     fn captured_layout_and_routes() {
