@@ -39,6 +39,7 @@ impl Device {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModuleCapabilities {
     pub input_switches: bool,
+    pub signal_meters: bool,
 }
 impl ModuleCapabilities {
     fn decode(data: &[u8]) -> Result<Self, Error> {
@@ -55,6 +56,7 @@ impl ModuleCapabilities {
         }
         Ok(Self {
             input_switches: data[8] & 1 != 0,
+            signal_meters: data[8] & 2 != 0,
         })
     }
 }
@@ -95,7 +97,45 @@ pub fn decode_record(data: &[u8]) -> Result<(Device, State), Error> {
     Ok((device, State(state)))
 }
 
+fn decode_meter_record(data: &[u8]) -> Result<(Device, crate::Meters), Error> {
+    if data.len() != 80 || &data[..4] != b"MF4M" || word(data, 4) != 1 || word(data, 14) != 64 {
+        return Err(Error::new(
+            ErrorKind::ModuleIncompatible,
+            "Unsupported kernel meter record",
+        ));
+    }
+    let device = Device {
+        vendor_id: word(data, 6),
+        product_id: word(data, 8),
+        bus: word(data, 10),
+        address: word(data, 12),
+    };
+    device
+        .require_mf4()
+        .map_err(|e| Error::new(ErrorKind::UnsupportedCapability, e))?;
+    Ok((device, crate::Meters::decode(&data[16..])?))
+}
+
 impl Kernel {
+    /// Fixed read-only C2 query. It never falls back to a userspace USB driver.
+    pub fn meters(&mut self) -> Result<(Device, crate::Meters), Error> {
+        let mut data = [0; 80];
+        let request = libc::_IOR::<[u8; 80]>(b'M' as u32, 0x43);
+        let result = unsafe {
+            libc::ioctl(
+                self.file.as_raw_fd(),
+                request as libc::c_ulong,
+                data.as_mut_ptr(),
+            )
+        };
+        if result < 0 {
+            return Err(Error::io(
+                std::io::Error::last_os_error(),
+                "Cannot read MF4 signal meters",
+            ));
+        }
+        decode_meter_record(&data)
+    }
     pub fn module_capabilities(&self) -> Result<ModuleCapabilities, Error> {
         let mut data = [0u8; 16];
         let request = libc::_IOR::<[u8; 16]>(b'M' as u32, 0x42);
@@ -243,6 +283,27 @@ pub fn reference_device() -> Device {
 mod tests {
     use super::*;
     use crate::model::MF4_PID;
+    #[test]
+    fn meters_require_the_fixed_header_and_mf4_identity() {
+        assert!(decode_meter_record(&[]).is_err());
+        let mut data = [0; 80];
+        data[..4].copy_from_slice(b"MF4M");
+        for (offset, value) in [(4, 1), (6, VID), (8, MF4_PID), (10, 2), (12, 5), (14, 64)] {
+            put(&mut data, offset, value);
+        }
+        let (device, meters) = decode_meter_record(&data).unwrap();
+        assert_eq!((device.bus, device.address), (2, 5));
+        assert_eq!(meters.sources_dbfs, [None; 10]);
+        for offset in [0, 4, 6, 8, 14] {
+            let mut bad = data;
+            bad[offset] ^= 1;
+            assert!(decode_meter_record(&bad).is_err());
+        }
+        let mut old = Kernel {
+            file: File::open("/dev/null").unwrap(),
+        };
+        assert!(old.meters().is_err());
+    }
     #[test]
     fn capability_records_validate_the_additive_abi() {
         let mut data = [0; 16];

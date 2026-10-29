@@ -106,6 +106,50 @@ static int mf4_wait_state(struct usb_device *device, struct mf4_transaction *tx,
 	return -EIO;
 }
 
+/* Fixed, read-only C2 query. No request fields or selectors come from userspace. */
+static long mf4_meters(struct file *file, unsigned long arg)
+{
+	struct mf4_search search = {};
+	struct mf4_meter_record *record;
+	int result;
+
+	if (!(file->f_mode & FMODE_READ))
+		return -EACCES;
+	record = kzalloc(sizeof(*record), GFP_KERNEL);
+	if (!record)
+		return -ENOMEM;
+	if (mutex_lock_interruptible(&mf4_query_mutex)) {
+		result = -ERESTARTSYS;
+		goto free;
+	}
+	usb_for_each_dev(&search, mf4_find);
+	if (!search.device || search.count != 1) {
+		result = search.device ? -EBUSY : -ENODEV;
+		goto unlock;
+	}
+	memcpy(record->magic, "MF4M", 4);
+	record->version = cpu_to_le16(1);
+	record->vendor = cpu_to_le16(MF4_VID);
+	record->product = cpu_to_le16(MF4_PID);
+	record->bus = cpu_to_le16(search.device->bus->busnum);
+	record->address = cpu_to_le16(search.device->devnum);
+	record->length = cpu_to_le16(MF4_METER_SIZE);
+	result = usb_control_msg(search.device, usb_rcvctrlpipe(search.device, 0), 0xc2,
+				 USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
+				 0, 0, record->data, MF4_METER_SIZE, 750);
+	if (result >= 0)
+		result = result == MF4_METER_SIZE ? 0 : -EPROTO;
+	if (!result && copy_to_user((void __user *)arg, record, sizeof(*record)))
+		result = -EFAULT;
+unlock:
+	if (search.device)
+		usb_put_dev(search.device);
+	mutex_unlock(&mf4_query_mutex);
+free:
+	kfree(record);
+	return result;
+}
+
 static long mf4_apply(struct file *file, unsigned int command, unsigned long arg)
 {
 	struct mf4_work *work;
@@ -120,12 +164,14 @@ static long mf4_apply(struct file *file, unsigned int command, unsigned long arg
 			.magic = { 'M', 'F', '4', 'C' },
 			.version = cpu_to_le16(1),
 			.length = cpu_to_le16(sizeof(struct mf4_capabilities)),
-			.flags = cpu_to_le32(MF4_CAP_INPUT_SWITCHES),
+			.flags = cpu_to_le32(MF4_CAP_INPUT_SWITCHES | MF4_CAP_METER_QUERY),
 		};
 		if (!(file->f_mode & FMODE_READ))
 			return -EACCES;
 		return copy_to_user((void __user *)arg, &capabilities, sizeof(capabilities)) ? -EFAULT : 0;
 	}
+	if (command == MF4_IOCTL_METERS)
+		return mf4_meters(file, arg);
 	if (command != MF4_IOCTL_APPLY)
 		return -ENOTTY;
 	if (!(file->f_mode & FMODE_WRITE))
