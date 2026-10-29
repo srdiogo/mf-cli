@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-use crate::model::{Model, VID};
 use clap::{CommandFactory, Parser, error::ErrorKind};
+use mf_core::{Model, VID};
 use rusb::{DeviceHandle, GlobalContext};
 use std::{fs, path::Path, process, thread::sleep, time::Duration};
 

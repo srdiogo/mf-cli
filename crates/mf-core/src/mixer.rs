@@ -88,7 +88,7 @@ pub fn channel(
     if changes.is_empty() {
         return Err("Specify --level, --pan, --mute or --solo".into());
     }
-    changed(state, changes)
+    Ok(changes)
 }
 
 pub fn master(mix: Mix, text: &str) -> Result<Vec<Change>, String> {
@@ -163,7 +163,7 @@ pub fn source(state: &State, mix: Mix, name: &str, included: bool) -> Result<Vec
         selector,
         value: u16::from(included),
     });
-    changed(state, changes)
+    Ok(changes)
 }
 
 /// Restore only captured controls. Topology that needs an unvalidated selector
@@ -252,7 +252,7 @@ pub fn restore(
 mod tests {
     use super::*;
     fn fixture() -> State {
-        State::from_hex(include_str!("../tests/fixtures/windows-b2.hex").trim()).unwrap()
+        State::from_hex(include_str!("../../../tests/fixtures/windows-b2.hex").trim()).unwrap()
     }
     #[test]
     fn pan_fits_capture_center_and_extremes() {

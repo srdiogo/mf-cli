@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
-mod config;
 mod legacy;
-mod mixer;
-mod model;
-mod state;
-mod transport;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use config::Snapshot;
-use state::{Change, Mix, State};
+use mf_core::{self as core, Device, Error, Kernel, Mix, Operation, Plan, Snapshot, State};
 use std::path::PathBuf;
+
+fn mix_parser() -> impl clap::builder::TypedValueParser<Value = Mix> {
+    use clap::builder::TypedValueParser;
+    clap::builder::PossibleValuesParser::new(Mix::ALL.map(Mix::name))
+        .map(|name| name.parse().expect("Known mix name"))
+}
 
 #[derive(Parser)]
 #[command(
@@ -35,14 +35,14 @@ enum Commands {
     },
     /// Adjust one MiniFuse 4 internal mix
     Mixer {
-        #[arg(value_enum)]
+        #[arg(value_parser = mix_parser())]
         mix: Mix,
         #[command(subcommand)]
         action: MixerAction,
     },
     /// Route out12 (usb12/mix), out34 (usb34/mix), or loopback (usb56/mix/out12/out34)
     Route {
-        #[arg(value_enum)]
+        #[arg(value_parser = mix_parser())]
         mix: Mix,
         source: String,
         #[arg(long)]
@@ -114,22 +114,22 @@ enum ConfigAction {
         file: PathBuf,
         #[arg(long)]
         against: Option<PathBuf>,
-        #[arg(long, value_enum)]
+        #[arg(long, value_parser = mix_parser())]
         mix: Option<Mix>,
     },
     /// Restore captured writable mixer fields; opaque bytes and trims stay unchanged
     Restore {
         file: PathBuf,
-        #[arg(long, value_enum)]
+        #[arg(long, value_parser = mix_parser())]
         mix: Option<Mix>,
         #[arg(long)]
         dry_run: bool,
     },
 }
 
-fn show(device: &transport::Device, state: &State, json: bool) -> Result<(), String> {
+fn show(device: &Device, state: &State, json: bool) -> Result<(), Error> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "device": device, "state": state.decoded(), "payload_hex": state::hex(&state.0) })).map_err(|e| e.to_string())?);
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "device": device, "state": state.decoded(), "payload_hex": core::hex(&state.0) })).map_err(|e| e.to_string())?);
     } else {
         println!(
             "MiniFuse 4 {:04x}:{:04x} (bus {}, address {})",
@@ -146,7 +146,7 @@ fn show(device: &transport::Device, state: &State, json: bool) -> Result<(), Str
                     .map(|x| format!("{x:.3}"))
                     .unwrap_or("-inf".into())
             );
-            for (ch, name) in state::CHANNEL_NAMES.iter().enumerate().take(mix.channels()) {
+            for (ch, name) in core::CHANNEL_NAMES.iter().enumerate().take(mix.channels()) {
                 let value = |offset| {
                     state
                         .db(offset)
@@ -169,23 +169,15 @@ fn show(device: &transport::Device, state: &State, json: bool) -> Result<(), Str
     Ok(())
 }
 
-fn plan_json(state: &State, plan: &[Change], saved: Option<&State>) -> Result<(), String> {
-    let predicted = state::predict(state, plan)?;
-    let ignored: Vec<usize> = saved
-        .map(|s| {
-            (0..state::STATE_SIZE)
-                .filter(|&i| s.0[i] != predicted.0[i])
-                .collect()
-        })
-        .unwrap_or_default();
-    println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "usb_write_count": plan.len(), "changes": plan,
-        "predicted_after_hex": state::hex(&predicted.0), "unrestored_byte_offsets": ignored,
-        "note": "Only mapped mixer fields are restorable. Opaque bytes, input trims, INST, 48 V and LED settings are not replayed." })).map_err(|e| e.to_string())?);
+fn plan_json(plan: &Plan) -> Result<(), Error> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan.summary()).map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
-fn run(cli: Cli) -> Result<(), String> {
-    // Validate offline files before opening hardware. Show never opens a node.
+fn run(cli: Cli) -> Result<(), Error> {
     let saved = match &cli.command {
         Commands::Config {
             action:
@@ -195,13 +187,14 @@ fn run(cli: Cli) -> Result<(), String> {
                     mix,
                 },
         } => {
-            let current = Snapshot::load(against)?.state()?;
-            let saved = Snapshot::load(file)?.state()?;
-            return plan_json(
-                &current,
-                &mixer::restore(&current, &saved, *mix)?,
-                Some(&saved),
-            );
+            let current = Snapshot::load(against)?;
+            let saved = Snapshot::load(file)?;
+            return plan_json(&core::plan_restore(
+                &current.device,
+                &current.state()?,
+                &saved,
+                *mix,
+            )?);
         }
         Commands::Config {
             action: ConfigAction::Show { file, json },
@@ -211,7 +204,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Commands::Config {
             action: ConfigAction::Diff { file, .. } | ConfigAction::Restore { file, .. },
-        } => Some(Snapshot::load(file)?.state()?),
+        } => Some(Snapshot::load(file)?),
         _ => None,
     };
     let (mutating, dry_run) = match &cli.command {
@@ -223,15 +216,15 @@ fn run(cli: Cli) -> Result<(), String> {
                 | MixerAction::Source { dry_run, .. } => *dry_run,
             },
         ),
-        Commands::Route { dry_run, .. } => (true, *dry_run),
-        Commands::Config {
+        Commands::Route { dry_run, .. }
+        | Commands::Config {
             action: ConfigAction::Restore { dry_run, .. },
         } => (true, *dry_run),
         _ => (false, false),
     };
-    let mut kernel = transport::Kernel::open(mutating && !dry_run)?;
+    let mut kernel = Kernel::open(mutating && !dry_run)?;
     let (device, state) = kernel.read()?;
-    let changes = match cli.command {
+    let operation = match cli.command {
         Commands::Status { json } => return show(&device, &state, json),
         Commands::Config {
             action: ConfigAction::Save { file },
@@ -246,15 +239,19 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Config {
             action: ConfigAction::Diff { mix, .. },
         } => {
-            return plan_json(
+            return plan_json(&core::plan_restore(
+                &device,
                 &state,
-                &mixer::restore(&state, saved.as_ref().unwrap(), mix)?,
-                saved.as_ref(),
-            );
+                saved.as_ref().unwrap(),
+                mix,
+            )?);
         }
         Commands::Config {
             action: ConfigAction::Restore { mix, .. },
-        } => mixer::restore(&state, saved.as_ref().unwrap(), mix)?,
+        } => {
+            let plan = core::plan_restore(&device, &state, saved.as_ref().unwrap(), mix)?;
+            return apply(&mut kernel, &plan, dry_run, cli.backup_dir);
+        }
         Commands::Mixer {
             mix,
             action:
@@ -266,19 +263,21 @@ fn run(cli: Cli) -> Result<(), String> {
                     solo,
                     ..
                 },
-        } => mixer::channel(
-            &state,
+        } => Operation::Channel {
             mix,
-            &source,
-            level.as_deref(),
+            source,
+            level: level.map(|v| v.parse()).transpose()?,
             pan,
-            mute.map(Toggle::enabled),
-            solo.map(Toggle::enabled),
-        )?,
+            mute: mute.map(Toggle::enabled),
+            solo: solo.map(Toggle::enabled),
+        },
         Commands::Mixer {
             mix,
             action: MixerAction::Master { level, .. },
-        } => mixer::master(mix, &level)?,
+        } => Operation::Master {
+            mix,
+            level: level.parse()?,
+        },
         Commands::Mixer {
             mix,
             action:
@@ -287,29 +286,38 @@ fn run(cli: Cli) -> Result<(), String> {
                     state: included,
                     ..
                 },
-        } => mixer::source(&state, mix, &source, included.enabled())?,
-        Commands::Route { mix, source, .. } => mixer::route(mix, &source)?,
+        } => Operation::Membership {
+            mix,
+            source,
+            included: included.enabled(),
+        },
+        Commands::Route { mix, source, .. } => Operation::Route { mix, source },
         Commands::Config {
             action: ConfigAction::Show { .. },
         } => unreachable!(),
     };
-    let changes = state::changed(&state, changes)?;
+    let plan = core::plan(&device, &state, &[operation])?;
+    apply(&mut kernel, &plan, dry_run, cli.backup_dir)
+}
+
+fn apply(
+    kernel: &mut Kernel,
+    plan: &Plan,
+    dry_run: bool,
+    backup_dir: Option<PathBuf>,
+) -> Result<(), Error> {
     if dry_run {
-        return plan_json(&state, &changes, saved.as_ref());
+        return plan_json(plan);
     }
-    if let Some(saved) = &saved {
-        let expected = state::predict(&state, &changes)?;
-        let ignored = (0..state::STATE_SIZE)
-            .filter(|&i| saved.0[i] != expected.0[i])
-            .count();
-        if ignored > 0 {
-            eprintln!(
-                "note: {ignored} snapshot bytes are outside the selected/restorable fields and will retain their live values; inspect config diff for offsets."
-            );
-        }
+    if !plan.omitted_offsets().is_empty() {
+        eprintln!(
+            "note: {} snapshot bytes are outside the selected/restorable fields and will retain their live values; inspect config diff for offsets.",
+            plan.omitted_offsets().len()
+        );
     }
-    let dir = cli.backup_dir.unwrap_or_else(config::default_backup_dir);
-    match config::apply(&mut kernel, &device, &state, changes, &dir)? {
+    let dir = backup_dir.unwrap_or_else(core::default_backup_dir);
+    let outcome = core::execute(kernel, plan, &dir)?.require_success()?;
+    match outcome.journal {
         Some(path) => println!(
             "MiniFuse 4: change verified by complete B2 readback. Operation record: {}",
             path.display()

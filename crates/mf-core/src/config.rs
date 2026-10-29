@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 use crate::{
+    Backend, Device, DeviceOutcome, Error, ErrorKind, JournalStatus, Outcome, Plan, State, hex,
     model::MF4_PID,
-    state::{Change, State, changed, hex, predict},
-    transport::{Backend, Device},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
     pub schema_version: u32,
@@ -120,83 +119,149 @@ pub fn default_backup_dir() -> PathBuf {
         .join(".local/state/mf-cli")
 }
 
-pub fn apply<B: Backend>(
+pub(crate) fn execute<B: Backend>(
     backend: &mut B,
-    device: &Device,
-    before: &State,
-    changes: Vec<Change>,
+    plan: &Plan,
     directory: &Path,
-) -> Result<Option<PathBuf>, String> {
-    device.require_mf4()?;
-    let changes = changed(before, changes)?;
-    if changes.is_empty() {
-        return Ok(None);
+) -> Result<Outcome, Error> {
+    if plan.changes.is_empty() {
+        return Ok(Outcome {
+            device_outcome: DeviceOutcome::Verified,
+            device_write_attempted: Some(false),
+            rollback_attempted: false,
+            rollback_verified: false,
+            after_state: Some(plan.before.clone()),
+            journal_status: JournalStatus::NotNeeded,
+            journal: None,
+            backup: None,
+            error: None,
+            journal_error: None,
+        });
     }
-    let expected = predict(before, &changes)?;
-    create_backup_dir(directory)?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let base = format!("mf4-{stamp}-{}", std::process::id());
-    let backup = directory.join(format!("{base}.json"));
-    Snapshot::new(device.clone(), before).save(&backup)?;
-    let journal_path = directory.join(format!("{base}.operation.json"));
-    let mut journal = serde_json::json!({ "schema_version": 1, "status": "prepared", "backup": backup,
-        "device": device, "changes": changes, "expected_after_hex": hex(&expected.0) });
-    save_new(
-        &journal_path,
-        &serde_json::to_vec_pretty(&journal).map_err(|e| e.to_string())?,
-    )?;
-    // Both files have been synced before invoking any device mutation.
-    let result = backend.apply(device, before, &changes).and_then(|after| {
-        if after != expected {
-            Err("Backend returned an unverified state".into())
+    let prepare = || -> Result<(PathBuf, PathBuf, serde_json::Value, String), String> {
+        create_backup_dir(directory)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let base = format!("mf4-{stamp}-{}", std::process::id());
+        let backup = directory.join(format!("{base}.json"));
+        Snapshot::new(plan.device.clone(), &plan.before).save(&backup)?;
+        let journal_path = directory.join(format!("{base}.operation.json"));
+        let journal = serde_json::json!({ "schema_version": 1, "status": "prepared", "backup": backup,
+            "device": plan.device, "changes": plan.changes, "expected_after_hex": hex(&plan.predicted.0) });
+        save_new(
+            &journal_path,
+            &serde_json::to_vec_pretty(&journal).map_err(|e| e.to_string())?,
+        )?;
+        Ok((backup, journal_path, journal, base))
+    };
+    let (backup, journal_path, mut journal, base) =
+        prepare().map_err(|e| Error::new(ErrorKind::BackupFailed, e))?;
+    // Snapshot and prepared operation record are durable before dispatch.
+    let result = backend.transact(plan).and_then(|after| {
+        if after != plan.predicted {
+            let mut error = Error::new(
+                ErrorKind::ReadbackFailed,
+                "Backend returned an unverified state",
+            );
+            error.device_write_attempted = Some(true);
+            Err(error)
         } else {
             Ok(after)
         }
     });
-    match &result {
-        Ok(after) => {
-            journal["status"] = "verified".into();
-            journal["after_hex"] = hex(&after.0).into();
-        }
+    let (device_outcome, attempted, rollback_attempted, rollback_verified, after) = match &result {
+        Ok(after) => (
+            DeviceOutcome::Verified,
+            Some(true),
+            false,
+            false,
+            Some(after.clone()),
+        ),
         Err(error) => {
-            journal["status"] = "failed".into();
-            journal["error"] = error.clone().into();
+            let restored =
+                error.rollback_verified && error.after_state.as_deref() == Some(&plan.before);
+            let outcome = if restored {
+                DeviceOutcome::FailedRestored
+            } else if error.rollback_attempted {
+                DeviceOutcome::FailedUnrestored
+            } else if error.device_write_attempted == Some(false) {
+                DeviceOutcome::Rejected
+            } else {
+                DeviceOutcome::Unknown
+            };
+            (
+                outcome,
+                error.device_write_attempted,
+                error.rollback_attempted,
+                restored,
+                error.after_state.as_deref().cloned(),
+            )
         }
+    };
+    journal["status"] = if result.is_ok() { "verified" } else { "failed" }.into();
+    if let Some(state) = &after {
+        journal["after_hex"] = hex(&state.0).into();
     }
+    if let Err(error) = &result {
+        journal["error"] = error.to_string().into();
+    }
+    journal["device_outcome"] = serde_json::to_value(device_outcome).expect("enum serialization");
+    journal["rollback_attempted"] = rollback_attempted.into();
+    journal["rollback_verified"] = rollback_verified.into();
     let temp = directory.join(format!("{base}.operation.pending"));
-    let persist = save_new(
-        &temp,
-        &serde_json::to_vec_pretty(&journal).map_err(|e| e.to_string())?,
-    )
-    .and_then(|_| fs::rename(&temp, &journal_path).map_err(|e| e.to_string()))
-    .and_then(|_| sync_parent(&journal_path));
-    if let Err(error) = persist {
-        return Err(format!(
-            "Device result: {}. Could not finalize journal: {error}. Backup: {}",
-            match &result {
-                Ok(_) => "verified",
-                Err(error) => error.as_str(),
-            },
-            backup.display()
-        ));
-    }
-    result.map_err(|e| format!("{e} Backup and operation record: {}", backup.display()))?;
-    Ok(Some(journal_path))
+    let persist = serde_json::to_vec_pretty(&journal)
+        .map_err(|e| e.to_string())
+        .and_then(|data| save_new(&temp, &data))
+        .and_then(|_| fs::rename(&temp, &journal_path).map_err(|e| e.to_string()))
+        .and_then(|_| sync_parent(&journal_path));
+    Ok(Outcome {
+        device_outcome,
+        device_write_attempted: attempted,
+        rollback_attempted,
+        rollback_verified,
+        after_state: after,
+        journal_status: if persist.is_ok() {
+            JournalStatus::Finalized
+        } else {
+            JournalStatus::Failed
+        },
+        journal: Some(journal_path),
+        backup: Some(backup),
+        error: result.err(),
+        journal_error: persist.err(),
+    })
+}
+
+#[cfg(test)]
+fn apply<B: Backend>(
+    backend: &mut B,
+    device: &Device,
+    before: &State,
+    changes: Vec<crate::state::Change>,
+    directory: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let plan = Plan::new(device, before, changes, None).map_err(|e| e.to_string())?;
+    execute(backend, &plan, directory)
+        .and_then(Outcome::require_success)
+        .map(|outcome| outcome.journal)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{Change, predict};
     struct Fake {
         calls: usize,
         fail: bool,
         directory: PathBuf,
     }
     impl Backend for Fake {
-        fn apply(&mut self, _: &Device, s: &State, c: &[Change]) -> Result<State, String> {
+        fn transact(&mut self, plan: &Plan) -> Result<State, Error> {
+            let s = plan.before();
+            let c = &plan.changes;
             self.calls += 1;
             let paths: Vec<_> = fs::read_dir(&self.directory).unwrap().collect();
             assert_eq!(
@@ -207,7 +272,7 @@ mod tests {
             if self.fail {
                 Err("Simulated USB failure; rollback verified".into())
             } else {
-                predict(s, c)
+                predict(s, c).map_err(Error::from)
             }
         }
     }
@@ -325,8 +390,8 @@ mod tests {
     fn wrong_readback_is_never_reported_as_verified() {
         struct Wrong;
         impl Backend for Wrong {
-            fn apply(&mut self, _: &Device, state: &State, _: &[Change]) -> Result<State, String> {
-                Ok(state.clone())
+            fn transact(&mut self, plan: &Plan) -> Result<State, Error> {
+                Ok(plan.before().clone())
             }
         }
         let dir = temp();

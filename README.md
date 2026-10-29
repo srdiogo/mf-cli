@@ -32,7 +32,7 @@ and headers for the target Linux kernel.
 
 ```sh
 cargo build --release --locked
-cargo test --locked
+cargo test --workspace --locked
 make -C kmod W=1
 ```
 
@@ -173,12 +173,19 @@ memory. No hardware save/flush command is added.
 See [configuration and persistence](docs/mf4/configuration.md) for the schema,
 restore scope, journaling and crash behavior.
 
+## Shared library
+
+The workspace includes the blocking `mf-core` library. The CLI and future
+session service use the same device model, immutable plans, snapshot schema
+and verified execution path. The core has no CLI parser, async runtime or GUI
+dependency. See [the public API and compatibility contract](docs/core.md).
+
 ## Development and protocol reference
 
 ```sh
-cargo fmt --check
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release --locked
 make -C kmod W=1
 sha256sum -c docs/mf4/SHA256SUMS

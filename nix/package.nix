@@ -15,6 +15,7 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../src
+      ../crates
       ../tests
       ../docs/mf4
       ../kmod/mf4_protocol.h
