@@ -82,7 +82,14 @@ Offsets are decimal, from zero; all listed words are little-endian.
 | Stereo inclusion/display mask | 170 | 172 | 174 |
 | Route | 176 | 178 | 180 |
 
-Bytes 0–17 and 182–189 are preserved as opaque state in this implementation.
+The INST mask is the word at byte 0 (bit 0 = INST1, bit 1 = INST2).
+The word at byte 6, bit 0, is shared phantom power for inputs 1–2.
+All other header bits and bytes 182–189 are preserved. These input fields are
+MF4-specific; see [physical validation](input-switches.md).
+
+Typed input writes are `0000` (INST1), `0001` (INST2) and `0300`
+(shared phantom power), each accepting exactly 0 or 1. Input switches are never
+replayed by mixer snapshot restoration.
 Bytes 144–151 are the trim area; Input 3/4 are at 148/150. Trims are decoded
 read-only. Ten stored gains per bank do not establish support for USB5/6 in
 the output mixes.
@@ -103,7 +110,14 @@ is not established. Changing mute or solo leaves both gain words untouched.
 ## Kernel ABI
 
 `/dev/minifuse_cmd` keeps the existing ASCII write ABI for known model-specific
-toggles. It additionally exposes one 206-byte status record and an ioctl:
+toggles. It additionally exposes one 206-byte status record and two ioctls:
+
+- Capabilities: `_IOR('M', 0x42, struct mf4_capabilities)`, 16 bytes.
+  `MF4C`, LE16 version=1, LE16 length=16, LE32 flags, LE32 reserved=0.
+  Flag bit 0 enables verified input-switch transactions. This query requires
+  read access and performs no USB transfer. `ENOTTY` means an older module
+  with no additional features; input writes must remain disabled.
+
 
 - Status: `MF4S`, LE16 version=1, vendor, product, bus, address, length=190,
   followed by the 190-byte B2 payload. Reads are MF4-only and refuse multiple MF4s.

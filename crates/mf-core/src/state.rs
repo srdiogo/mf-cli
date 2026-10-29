@@ -61,7 +61,21 @@ pub fn hex(bytes: &[u8]) -> String {
         })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Inputs {
+    pub inst1: bool,
+    pub inst2: bool,
+    pub phantom_power: bool,
+}
+
 impl State {
+    pub fn inputs(&self) -> Inputs {
+        Inputs {
+            inst1: self.word(0) & 1 != 0,
+            inst2: self.word(0) & 2 != 0,
+            phantom_power: self.word(6) & 1 != 0,
+        }
+    }
     pub fn from_hex(raw: &str) -> Result<Self, String> {
         if raw.len() != STATE_SIZE * 2 || !raw.is_ascii() {
             return Err("B2 state must contain exactly 190 bytes encoded as hexadecimal".into());
@@ -108,7 +122,7 @@ impl State {
                 "stereo_mask": self.word(170 + i * 2) })
                 })
                 .collect();
-        serde_json::json!({ "mixes": mixes, "input3_trim_db": self.db(148),
+        serde_json::json!({ "inputs": self.inputs(), "mixes": mixes, "input3_trim_db": self.db(148),
             "input4_trim_db": self.db(150), "opaque_header_hex": hex(&self.0[..18]),
             "opaque_tail_hex": hex(&self.0[182..]),
             "note": "Levels/pan are derived from stored gains, not signal meters. Trims are read-only." })
@@ -150,6 +164,18 @@ pub fn target(change: Change) -> Result<(usize, u16), String> {
     let feature = change.selector >> 8;
     let channel = usize::from(change.selector & 0xff);
     let signed = change.value as i16;
+    if feature == 0 && channel < 2 {
+        if change.value > 1 {
+            return Err("INST requires a boolean".into());
+        }
+        return Ok((0, 1 << channel));
+    }
+    if feature == 3 && channel == 0 {
+        if change.value > 1 {
+            return Err("Phantom power requires a boolean".into());
+        }
+        return Ok((6, 1));
+    }
     for (bus, base) in [(LEFT, 18), (RIGHT, 38)] {
         if let Some(mix) = bus.iter().position(|&f| f == feature) {
             if channel >= if mix == 2 { 10 } else { 8 } || signed > 12 * 256 {
@@ -282,6 +308,7 @@ mod tests {
             parts[0],
             libc::_IOWR::<[u8; crate::transport::TX_SIZE]>(b'M' as u32, 0x41) as u64
         );
+        assert_eq!(parts[2], libc::_IOR::<[u8; 16]>(b'M' as u32, 0x42) as u64);
         let mut hash = 14695981039346656037u64;
         let mut fold = |v: u16| {
             hash = (hash ^ u64::from(v)).wrapping_mul(1099511628211);
@@ -390,13 +417,48 @@ mod tests {
         assert_eq!(state.word(152) & !1, out.word(152));
     }
     #[test]
+    fn input_rollback_values_restore_the_complete_original_state() {
+        let mut before = fixture();
+        before.set_word(0, 0xfffd);
+        before.set_word(6, 0xfffe);
+        let changes = [
+            Change {
+                selector: 0,
+                value: 0,
+            },
+            Change {
+                selector: 1,
+                value: 1,
+            },
+            Change {
+                selector: 0x0300,
+                value: 1,
+            },
+        ];
+        let after = predict(&before, &changes).unwrap();
+        assert_eq!(after.word(0), 0xfffe);
+        assert_eq!(after.word(6), 0xffff);
+        let undo: Vec<_> = changes
+            .iter()
+            .rev()
+            .map(|&change| Change {
+                value: original(&before, change).unwrap(),
+                ..change
+            })
+            .collect();
+        assert_eq!(predict(&after, &undo).unwrap(), before);
+    }
+    #[test]
     fn unsupported_selectors_channels_and_values_are_rejected() {
         for (s, v) in [
             (0x5601, 1),
             (0x0908, 0),
             (0x1d08, 0),
             (0x4802, 0),
-            (0x0300, 1),
+            (0x0300, 2),
+            (0x0301, 1),
+            (0x0002, 1),
+            (0x0000, 2),
             (0x0800, 2),
             (0x5800, 2),
             (0x5900, 1),

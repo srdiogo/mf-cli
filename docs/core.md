@@ -25,7 +25,9 @@ Ok(())
 }
 ```
 
-The four domain operations are `Channel`, `Master`, `Route` and `Membership`.
+The domain operations are `Channel`, `Master`, `Route`, `Membership` and
+`InputSwitch`. The last accepts only `Inst1`, `Inst2` or `PhantomPower` and a
+boolean. Phantom power is shared by the two physical preamps on MiniFuse 4.
 `Level::Silence` is distinct from a finite dB value. An absent channel field
 preserves it. Overlapping selectors are rejected before unchanged fields are
 filtered, including overlaps with membership removal's mute/solo effects.
@@ -68,13 +70,19 @@ separate outcome fields instead of collapsing them into one boolean.
 
 The workspace retains Rust 1.85, CLI syntax/exit behavior, legacy model maps,
 snapshot schema 1, exclusive mode-0600 files, pre-write sync and the existing
-206-byte status/1032-byte transaction ABI. Kernel sources and control allowlists
-are unchanged. Journals retain their existing status and fields, with additive
-device-outcome/recovery fields. Opaque state, trims, topology restrictions and
-unvalidated controls retain their previous behavior.
+206-byte status/1032-byte transaction ABI. The additive 16-byte module-capability ioctl advertises verified input-switch
+transactions. An older module returns no additional capabilities; the transport
+rejects input writes before dispatch. Mixer transactions keep their existing
+ABI and behavior. Journals retain their existing status and fields, with additive
+device-outcome/recovery fields. Input writes preserve every unknown header bit. Snapshot restore still excludes
+INST and phantom power, preventing a saved mixer preset from changing microphone
+power or input mode. Trims, topology restrictions and unvalidated controls retain
+their previous behavior.
 
 MF1/MF2 advertise no mixer/snapshot capability and never receive inferred B2
-queries. Switch readback, meters and physical-button events remain unavailable.
+queries. MF4 decodes the three input switches from B2; MF1/MF2 do not inherit those
+fields or selectors. Signal meters and physical-logo-button events remain
+unavailable.
 Capabilities describe potentially supported membership; the planner also checks
 the actual topology. Device readback still does not prove nonvolatile saving.
 
@@ -95,3 +103,8 @@ minimum Rust toolchain and current stable where applicable.
 These offline checks exercise the software boundary. The existing hardware
 report remains tied to its recorded source/binary hashes; extraction alone
 does not constitute another hardware test.
+
+Input-switch tests cover exact bit preservation, reverse rollback values,
+overlap rejection, restore exclusions, MF1/MF2 gating, C/Rust ABI agreement and
+rejection against a module without the new feature. Physical readback evidence is
+recorded in [the input-switch report](mf4/input-switches.md).

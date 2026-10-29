@@ -46,10 +46,20 @@ static inline int mf_legacy_allowed(__u16 pid, __u16 selector)
 	return 0;
 }
 
+#define MF4_CAP_INPUT_SWITCHES 1
+struct mf4_capabilities {
+	__u8 magic[4];
+	__le16 version;
+	__le16 length;
+	__le32 flags;
+	__le32 reserved;
+} __attribute__((packed));
+#define MF4_IOCTL_CAPABILITIES _IOR('M', 0x42, struct mf4_capabilities)
+
 #define MF4_IOCTL_APPLY _IOWR('M', 0x41, struct mf4_transaction)
 /* Return the B2 word affected by a captured selector, and its optional bit.
- * Unknown features, INST, phantom power, clocks, firmware and LED controls
- * have no path through this allowlist.
+ * The three input switches have model-specific, physically validated masks.
+ * Unknown features, clocks, firmware and LED controls remain excluded.
  */
 static inline int mf4_target(__u16 selector, __u16 value, __u16 *offset, __u16 *mask)
 {
@@ -58,6 +68,18 @@ static inline int mf4_target(__u16 selector, __u16 value, __u16 *offset, __u16 *
 	__s16 level = (__s16)value;
 	*mask = 0;
 	switch (feature) {
+	case 0x00:
+		if (channel > 1 || value > 1)
+			return -EINVAL;
+		*offset = 0;
+		*mask = 1U << channel;
+		return 0;
+	case 0x03:
+		if (channel || value > 1)
+			return -EINVAL;
+		*offset = 6;
+		*mask = 1;
+		return 0;
 	case 0x09:
 	case 0x13:
 	case 0x1d:

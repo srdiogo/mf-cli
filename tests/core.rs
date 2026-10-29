@@ -2,8 +2,8 @@
 // This consumer is compiled in the CLI package, outside the library. It can
 // only use mf-core's public API, just like the independent session service.
 use mf_core::{
-    Backend, Device, DeviceOutcome, Error, ErrorKind, JournalStatus, Level, Mix, Model, Operation,
-    Plan, Snapshot,
+    Backend, Device, DeviceOutcome, Error, ErrorKind, InputSwitch, JournalStatus, Level, Mix,
+    Model, Operation, Plan, Snapshot,
 };
 use std::{
     fs,
@@ -13,6 +13,72 @@ use std::{
 
 fn fixture() -> Snapshot {
     Snapshot::load(std::path::Path::new("tests/fixtures/windows-state.json")).unwrap()
+}
+
+#[test]
+fn input_plans_preserve_unknown_bits_and_never_enter_snapshot_restore() {
+    let snapshot = fixture();
+    let mut before = snapshot.state().unwrap();
+    before.set_word(0, 0xa5fc);
+    before.set_word(6, 0x5aa0);
+    let switch = |target, enabled| Operation::InputSwitch { target, enabled };
+    let plan = mf_core::plan(
+        &snapshot.device,
+        &before,
+        &[
+            switch(InputSwitch::Inst1, true),
+            switch(InputSwitch::Inst2, true),
+            switch(InputSwitch::PhantomPower, true),
+            master(),
+        ],
+    )
+    .unwrap();
+    assert!(plan.requires_input_switches());
+    let after = plan.predicted();
+    let inputs = after.inputs();
+    assert!(inputs.inst1 && inputs.inst2 && inputs.phantom_power);
+    let mut expected = before.clone();
+    expected.set_word(0, 0xa5ff);
+    expected.set_word(6, 0x5aa1);
+    expected.set_word(138, 0x8000);
+    assert_eq!(after, &expected);
+    let restored = mf_core::plan_restore(&snapshot.device, after, &snapshot, None).unwrap();
+    assert!(!restored.requires_input_switches());
+    assert_eq!(restored.predicted().inputs(), inputs);
+    assert_eq!(restored.predicted().word(0), 0xa5ff);
+    assert_eq!(restored.predicted().word(6), 0x5aa1);
+    for offset in [0, 1, 6, 7] {
+        if snapshot.state().unwrap().0[offset] != after.0[offset] {
+            assert!(restored.omitted_offsets().contains(&offset));
+        }
+    }
+    assert!(
+        mf_core::plan(
+            &snapshot.device,
+            &before,
+            &[
+                switch(InputSwitch::Inst1, false),
+                switch(InputSwitch::Inst1, true),
+            ]
+        )
+        .is_err()
+    );
+    for model in [Model::MiniFuse1, Model::MiniFuse2] {
+        assert!(!model.capabilities().switch_readback);
+        assert!(!model.capabilities().input_switches);
+    }
+    for pid in [0xaf80, 0xaf82, 0xaf90] {
+        let device = Device {
+            product_id: pid,
+            ..snapshot.device.clone()
+        };
+        assert_eq!(
+            mf_core::plan(&device, &before, &[switch(InputSwitch::Inst1, true)])
+                .unwrap_err()
+                .kind,
+            ErrorKind::UnsupportedCapability
+        );
+    }
 }
 fn directory() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
