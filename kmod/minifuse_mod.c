@@ -115,6 +115,17 @@ static long mf4_apply(struct file *file, unsigned int command, unsigned long arg
 	unsigned int i, j, attempted = 0;
 	int result, failure, undo_result = 0;
 
+	if (command == MF4_IOCTL_CAPABILITIES) {
+		const struct mf4_capabilities capabilities = {
+			.magic = { 'M', 'F', '4', 'C' },
+			.version = cpu_to_le16(1),
+			.length = cpu_to_le16(sizeof(struct mf4_capabilities)),
+			.flags = cpu_to_le32(MF4_CAP_INPUT_SWITCHES),
+		};
+		if (!(file->f_mode & FMODE_READ))
+			return -EACCES;
+		return copy_to_user((void __user *)arg, &capabilities, sizeof(capabilities)) ? -EFAULT : 0;
+	}
 	if (command != MF4_IOCTL_APPLY)
 		return -ENOTTY;
 	if (!(file->f_mode & FMODE_WRITE))

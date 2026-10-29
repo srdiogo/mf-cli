@@ -35,6 +35,30 @@ impl Device {
     }
 }
 
+/// Additive transport features. An older module truthfully reports none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModuleCapabilities {
+    pub input_switches: bool,
+}
+impl ModuleCapabilities {
+    fn decode(data: &[u8]) -> Result<Self, Error> {
+        if data.len() != 16
+            || &data[..4] != b"MF4C"
+            || word(data, 4) != 1
+            || word(data, 6) != 16
+            || data[12..] != [0; 4]
+        {
+            return Err(Error::new(
+                ErrorKind::ModuleIncompatible,
+                "Unsupported kernel capability record",
+            ));
+        }
+        Ok(Self {
+            input_switches: data[8] & 1 != 0,
+        })
+    }
+}
+
 pub struct Kernel {
     file: File,
 }
@@ -72,6 +96,26 @@ pub fn decode_record(data: &[u8]) -> Result<(Device, State), Error> {
 }
 
 impl Kernel {
+    pub fn module_capabilities(&self) -> Result<ModuleCapabilities, Error> {
+        let mut data = [0u8; 16];
+        let request = libc::_IOR::<[u8; 16]>(b'M' as u32, 0x42);
+        let result = unsafe {
+            libc::ioctl(
+                self.file.as_raw_fd(),
+                request as libc::c_ulong,
+                data.as_mut_ptr(),
+            )
+        };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOTTY) {
+                return Ok(ModuleCapabilities::default());
+            }
+            return Err(Error::io(error, "Cannot query module capabilities"));
+        }
+        ModuleCapabilities::decode(&data)
+    }
+
     pub fn open(write: bool) -> Result<Self, Error> {
         OpenOptions::new().read(true).write(write).open(NODE).map(|file| Self { file })
             .map_err(|e| Error::io(e, &format!("Cannot open {NODE}; status/mixer/config require the matching kernel module and device access; no USB fallback is used")))
@@ -113,6 +157,14 @@ pub fn encode_transaction(
 
 impl Backend for Kernel {
     fn transact(&mut self, plan: &Plan) -> Result<State, Error> {
+        if plan.requires_input_switches() && !self.module_capabilities()?.input_switches {
+            let mut error = Error::new(
+                ErrorKind::UnsupportedCapability,
+                "This module does not support verified input-switch transactions",
+            );
+            error.device_write_attempted = Some(false);
+            return Err(error);
+        }
         let device = &plan.device;
         let before = &plan.before;
         let changes = &plan.changes;
@@ -191,6 +243,49 @@ pub fn reference_device() -> Device {
 mod tests {
     use super::*;
     use crate::model::MF4_PID;
+    #[test]
+    fn capability_records_validate_the_additive_abi() {
+        let mut data = [0; 16];
+        data[..4].copy_from_slice(b"MF4C");
+        put(&mut data, 4, 1);
+        put(&mut data, 6, 16);
+        assert_eq!(
+            ModuleCapabilities::decode(&data).unwrap(),
+            ModuleCapabilities::default()
+        );
+        data[8] = 1;
+        assert!(ModuleCapabilities::decode(&data).unwrap().input_switches);
+        data[9] = 128; // Future flags do not invalidate known features.
+        assert!(ModuleCapabilities::decode(&data).unwrap().input_switches);
+        for offset in [0, 4, 6, 12] {
+            let mut malformed = data;
+            malformed[offset] ^= 1;
+            assert!(ModuleCapabilities::decode(&malformed).is_err());
+        }
+        assert!(ModuleCapabilities::decode(&[]).is_err());
+        // ENOTTY is what an older module returns for the new read-only query.
+        let old = Kernel {
+            file: File::open("/dev/null").unwrap(),
+        };
+        assert_eq!(
+            old.module_capabilities().unwrap(),
+            ModuleCapabilities::default()
+        );
+        let mut old = old;
+        let state = State([0; STATE_SIZE]);
+        let plan = crate::plan(
+            &reference_device(),
+            &state,
+            &[crate::Operation::InputSwitch {
+                target: crate::InputSwitch::Inst1,
+                enabled: true,
+            }],
+        )
+        .unwrap();
+        let error = old.transact(&plan).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedCapability);
+        assert_eq!(error.device_write_attempted, Some(false));
+    }
     #[test]
     fn rejects_malformed_records_and_other_models() {
         assert!(decode_record(&[]).is_err());

@@ -11,10 +11,10 @@ mod transport;
 pub use config::{Snapshot, default_backup_dir};
 pub use error::{Error, ErrorKind};
 pub use model::{MF4_PID, Model, VID};
-pub use state::{CHANNEL_NAMES, Mix, STATE_SIZE, State, hex};
-pub use transport::{Device, Kernel};
+pub use state::{CHANNEL_NAMES, Inputs, Mix, STATE_SIZE, State, hex};
+pub use transport::{Device, Kernel, ModuleCapabilities};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{path::Path, str::FromStr};
 
 impl FromStr for Mix {
@@ -57,8 +57,21 @@ impl FromStr for Level {
     }
 }
 
+/// MF4 input controls. Phantom power is shared by physical inputs 1 and 2.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputSwitch {
+    Inst1,
+    Inst2,
+    PhantomPower,
+}
+
 #[derive(Clone, Debug)]
 pub enum Operation {
+    InputSwitch {
+        target: InputSwitch,
+        enabled: bool,
+    },
     Channel {
         mix: Mix,
         source: String,
@@ -94,6 +107,7 @@ pub struct Capabilities {
     pub mixer: bool,
     pub host_snapshots: bool,
     pub switch_readback: bool,
+    pub input_switches: bool,
     pub signal_meters: bool,
     pub control_panel_button: bool,
     pub mixes: Vec<MixCapabilities>,
@@ -105,7 +119,8 @@ impl Model {
         Capabilities {
             mixer,
             host_snapshots: mixer,
-            switch_readback: false,
+            switch_readback: mixer,
+            input_switches: mixer,
             signal_meters: false,
             control_panel_button: false,
             mixes: if mixer {
@@ -135,7 +150,11 @@ impl Model {
                 Vec::new()
             },
             limitations: vec![
-                "Switch readback, signal meters and button events are unavailable.",
+                if mixer {
+                    "Input writes require a module advertising verified input-switch transactions; meters and button events are unavailable."
+                } else {
+                    "Switch readback, signal meters and button events are unavailable."
+                },
                 "Membership is subject to the current mono/stereo topology.",
                 "Readback does not confirm nonvolatile saving.",
             ],
@@ -191,6 +210,11 @@ impl Plan {
     pub fn write_count(&self) -> usize {
         self.changes.len()
     }
+    pub fn requires_input_switches(&self) -> bool {
+        self.changes
+            .iter()
+            .any(|change| matches!(change.selector, 0x0000 | 0x0001 | 0x0300))
+    }
     pub fn omitted_offsets(&self) -> &[usize] {
         &self.omitted
     }
@@ -213,6 +237,14 @@ pub fn plan(device: &Device, before: &State, operations: &[Operation]) -> Result
     let mut changes = Vec::new();
     for operation in operations {
         changes.extend(match operation {
+            Operation::InputSwitch { target, enabled } => vec![state::Change {
+                selector: match target {
+                    InputSwitch::Inst1 => 0,
+                    InputSwitch::Inst2 => 1,
+                    InputSwitch::PhantomPower => 0x0300,
+                },
+                value: u16::from(*enabled),
+            }],
             Operation::Channel {
                 mix,
                 source,
