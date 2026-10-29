@@ -39,3 +39,26 @@ The physical observations validate readback. The existing legacy-write report
 is separate; hardware validation of the extended verified transaction path
 must be recorded separately with its tested module artifact. Signal meters
 are not configuration gains and are outside this report.
+
+## Verified transaction and GUI test
+
+The extended transaction path was exercised on the same unit later that day,
+using core revision `d7a2987b5514db1d3aed2f1e68e2ec534bd7276e`, service revision
+`b443e6ae033493d35c90a21db9f7ca7716e1b537` and GUI revision
+`488a5cdb393eb43b494a35a4c0b1e1fe83f2d5cd`. The temporarily loaded module had
+SHA-256 `5bfd2dbd5c0ad8ab63ad107096cad3a40673310b6b360659d1a6dec15dff3d9a`
+and was built for kernel `7.2.5-3-omarchy`. Its capability query advertised
+verified input-switch transactions; reloading preserved the complete B2 state.
+
+The operator clicked each INST control on and off and confirmed the corresponding
+physical LED. An independent read after enabling INST1 found only byte 0 changed
+from 0 to 1. After both INST tests, all 190 bytes matched the baseline. The
+operator then disabled shared +48 V in the GUI and confirmed its LED off; only
+byte 6 changed from 1 to 0. Re-enabling it restored the LED and all 190 bytes.
+The microphone remained connected and the operator was asked to keep speakers
+silenced for the phantom-power cycle. Audio driver bindings were retained.
+
+This validates successful input transactions and readback on this unit. It does
+not test forced transport failure during rollback, MF1/MF2 hardware or persistence
+across a device power cycle. No full private state payload or microphone PCM is
+published.
