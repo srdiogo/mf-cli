@@ -17,6 +17,7 @@ stdenv.mkDerivation {
     fileset = lib.fileset.unions [
       ../kmod/Makefile
       ../kmod/minifuse_mod.c
+      ../kmod/mf4_protocol.h
     ];
   };
 
@@ -43,7 +44,7 @@ stdenv.mkDerivation {
   '';
 
   meta = {
-    description = "Kernel module that bypasses usbfs to control an Arturia MiniFuse without audio dropouts";
+    description = "Kernel transport for MiniFuse toggles and verified MiniFuse 4 mixer controls";
     homepage = "https://github.com/nolight132/mf-cli";
     license = lib.licenses.gpl2Only;
     platforms = lib.platforms.linux;

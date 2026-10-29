@@ -1,169 +1,202 @@
 # mf-cli
 
-`mf-cli` is a lightweight Linux command-line utility and kernel module written in Rust and C for controlling hardware features of the Arturia MiniFuse 1/2/4 audio interface. It allows you to toggle hardware settings that are normally only accessible via the proprietary "MiniFuse Control Center" software on Windows or macOS.
+A Linux command-line utility and kernel transport for Arturia MiniFuse audio
+interfaces, written in Rust and C. Existing commands toggle instrument mode,
+phantom power and Direct Mono where supported. This development branch adds
+MiniFuse 4 mixer status, verified mixing/routing changes and configuration files.
 
-By default, manipulating USB interfaces from userspace interrupts the active audio stream. `mf-cli` ships with a custom DKMS kernel module that perfectly integrates with the Linux kernel to send commands to the device **seamlessly**, without any audio dropouts!
+The new functionality is **unreleased**, based on upstream v0.2.6. It is backed
+by Windows captures, a previous Linux reference implementation and tests of
+this Rust fork on one MiniFuse 4. See [evidence and validation](docs/mf4/evidence.md)
+and the [hardware validation report](docs/mf4/hardware-validation.md).
 
-## Key Features
+## Compatibility
 
-- Phantom Power (+48V)
-- Direct Mono (MiniFuse 1/2)
-- Instrument Mode (INST), per input on the MiniFuse 4
-- Seamless control without audio interruption (via DKMS kernel module)
-- Non-Sudo Operation (both native and via fallback)
-- Chain multiple commands at once
+| Capability | MiniFuse 1 | MiniFuse 2 | MiniFuse 4 |
+|---|---|---|---|
+| USB product IDs | `af80`, `af82` | `af90` | `af70` |
+| Existing `inst`, `48v`, `monitor` syntax | Preserved | Preserved | `monitor` unavailable |
+| Independent `inst1` / `inst2` | No | Not added by this branch | Yes |
+| B2 status, mixer, routes and live config commands | Unsupported | Unsupported | Implemented |
+| Userspace USB fallback | Legacy toggles only | Legacy toggles only | Legacy toggles only |
 
-## ⚠️ Important Note on Secure Boot
+Vendor ID is `1c75`. MF1 `af82` retains upstream's existing handling; this branch
+adds no initialization or mode-transition command. The new mixer backend only
+queries PID `af70`; it does not assume shared MF1/MF2 layouts. Upstream's open
+[MF2 per-input INST PR #7](https://github.com/nolight132/mf-cli/pull/7) is separate.
 
-To achieve seamless, interruption-free audio toggling, this tool utilizes a custom DKMS kernel module. If you have **Secure Boot enabled** in your BIOS, the Linux kernel will block this unsigned module from loading.
+## Build and install this branch
 
-You will either need to disable Secure Boot or sign the DKMS module with your own Machine Owner Key (MOK). If the module cannot be loaded, `mf-cli` will gracefully fall back to standard userspace USB commands (which may cause a brief interruption to your audio stream).
+Requires Rust 1.85+, a C compiler, pkg-config, libusb development files, make
+and headers for the target Linux kernel.
 
-## Installation
-
-### Arch Linux (AUR) - Recommended
-
-The AUR package automatically builds both the CLI tool and the DKMS kernel module. Install using your favorite AUR helper:
-
-```bash
-yay -S mf-cli
+```sh
+cargo build --release --locked
+cargo test --locked
+make -C kmod W=1
 ```
 
-### NixOS (flake)
+The tests need a C compiler for the kernel/userspace validation probe. They do
+not open USB devices, load a module or send hardware controls.
 
-Add the flake as an input and enable the NixOS module. It installs the CLI and the udev rule, and builds the kernel module against the kernel you boot:
+To install the reviewed build:
 
-```nix
-{
-  inputs.mf-cli.url = "github:nolight132/mf-cli";
-
-  outputs =
-    { nixpkgs, mf-cli, ... }:
-    {
-      nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
-        modules = [
-          mf-cli.nixosModules.default
-          { hardware.minifuse.enable = true; }
-        ];
-      };
-    };
-}
-```
-
-Set `hardware.minifuse.kernelModule.enable = false` to skip the kernel module and use the userspace fallback instead.
-
-To try the CLI without installing it, run `nix run github:nolight132/mf-cli -- 48v on`.
-
-### Manual build
-
-Ensure you have `cargo` (Rust 1.85 or newer, for edition 2024), `libusb`, `systemd-libs`, `make`, and your system's Linux kernel headers installed.
-
-**1. Build the Rust CLI:**
-
-```bash
-git clone https://github.com/nolight132/mf-cli
-cd mf-cli
-cargo build --release
-sudo cp target/release/mf-cli /usr/bin/
-```
-
-**2. Build the seamless Kernel Module (Optional, but highly recommended):**
-
-```bash
-cd kmod
-make
-sudo make install
+```sh
+sudo install -m755 target/release/mf-cli /usr/local/bin/mf-cli
+sudo install -m644 70-minifuse.rules /etc/udev/rules.d/70-minifuse.rules
+sudo udevadm control --reload-rules
+sudo make -C kmod install
 sudo modprobe minifuse_mod
 ```
 
-## Configuration (Permissions)
+If an older `minifuse_mod` is loaded, unload it with `sudo modprobe -r
+minifuse_mod` before loading the new one, with no client holding its node open.
+Remove an older manually installed `99-minifuse.rules` so it cannot override
+the new permissions. Reconnect the interface after updating rules. The updated
+CLI and module are required together for the new commands.
 
-`mf-cli` is designed to be used without `sudo`.
+The `70-` rule tags the USB device and `/dev/minifuse_cmd` for active-local-session
+access before systemd's seat-access rule. The node has mode 0660; it is not
+world-writable. Headless/remote users need an administrator-assigned ACL or
+group policy. Secure Boot may require signing the external module using the
+system's existing signing mechanism. This project does not change boot policy.
 
-- **If using the kernel module:** No configuration is required! The module automatically creates a character device at `/dev/minifuse_cmd` with the proper permissions.
-- **If using the userspace fallback (no kernel module):** You must install the provided udev rule to avoid permission denied errors. (The AUR package does this automatically). If installing manually:
+AUR releases remain upstream releases until this work is accepted and published;
+installing the released AUR package will not install this branch's new features.
 
-1. Copy `99-minifuse.rules` to `/etc/udev/rules.d/`.
+### NixOS
 
-2. Reload rules:
+Use this fork and branch as the flake input:
 
-```bash
-sudo udevadm control --reload-rules && sudo udevadm trigger
+```nix
+{
+  inputs.mf-cli = {
+    type = "github";
+    owner = "srdiogo";
+    repo = "mf-cli";
+    ref = "feature/mf4-mixer-state";
+  };
+  outputs = { nixpkgs, mf-cli, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        mf-cli.nixosModules.default
+        { hardware.minifuse.enable = true; }
+      ];
+    };
+  };
+}
 ```
 
-## Usage
+Disabling `hardware.minifuse.kernelModule.enable` leaves only the legacy
+userspace fallback available. The new status/mixer/config device commands
+require the module. Nix expressions are updated here but were not built locally.
 
-The syntax is straightforward: `mf-cli <target> <on|off> [<target> <on|off> ...]`
+## Existing toggles
 
-`mf-cli` detects which MiniFuse model is connected and uses the matching commands. It will also automatically detect if the kernel module is loaded. If it is, it will route commands seamlessly. If not, it will print a warning and fall back to userspace USB control.
-
-On success it prints one line with the model and what changed, for example `MiniFuse 1: inst on, 48v off`. Run `mf-cli --help` for the targets and examples, and `mf-cli --version` for the version.
-
-### Supported targets
-
-| Target    | MiniFuse 1/2               | MiniFuse 4                         |
-| --------- | -------------------------- | ---------------------------------- |
-| `48v`     | Phantom +48V power         | Phantom +48V power (inputs 1 and 2) |
-| `inst`    | Instrument mode            | Instrument mode on input 1         |
-| `inst1`   | —                          | Instrument mode on input 1         |
-| `inst2`   | —                          | Instrument mode on input 2         |
-| `monitor` | Direct Monitoring Mono     | —                                  |
-
-Using a target that the connected model does not support prints an error listing the valid targets.
-
-### **Examples:**
-
-#### Toggle Phantom +48V Power
-
-```bash
-mf-cli 48v on
-mf-cli 48v off
-```
-
-#### Toggle Instrument Mode:
-
-```bash
-mf-cli inst on
-mf-cli inst off
-```
-
-#### Toggle Instrument Mode per input (MiniFuse 4):
-
-```bash
-mf-cli inst1 on
-mf-cli inst2 off
-```
-
-#### Toggle Direct Monitoring Mono (MiniFuse 1/2):
-
-```bash
-mf-cli monitor on
-mf-cli monitor off
-```
-
-#### Chain Multiple Commands:
-
-```bash
-# MiniFuse 1/2
+```sh
+# MiniFuse 1/2: original syntax and selector map
 mf-cli inst on 48v on monitor off
 
-# MiniFuse 4
+# MiniFuse 4: instrument mode per input; shared phantom power for inputs 1/2
 mf-cli inst1 on inst2 off 48v on
 ```
 
-## Protocol
+MF1/MF2 selectors remain INST=`0000`, +48V=`0400`, Direct Mono=`0500`.
+MF4 uses INST1=`0000`, INST2=`0001`, +48V=`0300`. All send a two-byte boolean
+payload using `21/22`, interface zero. The existing fallback can detach/reset
+the device and interrupt audio. Legacy toggles refuse ambiguous multiple-device
+setups; they are not snapshot-backed mixer transactions.
 
-All settings are sent as a single USB control transfer to interface 0 (`bmRequestType 0x21`, `bRequest 0x22`, `wIndex 0`) with a 2-byte payload: `01 00` for on, `00 00` for off. `wValue` is `(feature << 8) | channel`:
+## MiniFuse 4 status and mixer
 
-| Setting                | MiniFuse 1/2 | MiniFuse 4                          |
-| ---------------------- | ------------ | ----------------------------------- |
-| Instrument mode        | `0x0000`     | `0x0000` (input 1), `0x0001` (input 2) |
-| Phantom +48V           | `0x0400`     | `0x0300`                            |
-| Direct Monitoring Mono | `0x0500`     | not available                       |
+```sh
+mf-cli status
+mf-cli status --json
+mf-cli mixer out12 channel analog1 --level -6 --pan 0.5
+mf-cli mixer out34 channel usb2 --mute on --solo off
+mf-cli mixer loopback master -6
+mf-cli mixer out12 source analog2 on
+mf-cli mixer loopback source usb56 off
+mf-cli route out12 mix
+mf-cli route out34 usb34
+mf-cli route loopback out12
+```
+
+Mixes are `out12`, `out34`, `loopback`. Sources are `analog1`..`analog4` and
+`usb1`..`usb4`; loopback additionally exposes `usb5`/`usb6`. Source inclusion
+uses analog mono names or USB pair names (`usb12`, `usb34`, `usb56` where
+available). Analog stereo conversion and USB pair inclusion on out34 remain
+blocked. Existing out34 stereo sources still support gains, mute and solo.
+
+Source level is -60..+12 dB or `-inf`; master is -64..0 dB or `-inf`. Pan is
+0 (left)..1 (right). Level/pan are derived from bus gains, not live meters.
+Changing mute/solo preserves those gains. A master/fader affects its custom
+mix; it may not be in the selected output route when USB direct is active.
+
+Append `--dry-run` to a mixer, route or restore command to inspect the plan
+without writing USB. It still reads the live state. None of these commands
+uses the legacy USB fallback, detaches `snd-usb-audio`, or resets the device.
+Keeping the driver bound does not constitute a measured dropout/latency claim.
+
+Every nonempty change saves a durable backup and prepared journal, validates
+its selector/channel/value limits, compares the expected live state and
+requires complete B2 readback. Failure triggers a best-effort, verified rollback
+in the kernel; disconnection can prevent recovery. USB requests are sequential,
+not atomic. Avoid concurrent control from other applications.
+
+## Configuration files
+
+```sh
+mf-cli config save studio.json
+mf-cli config show studio.json --json
+mf-cli config diff studio.json
+mf-cli config restore studio.json --dry-run
+mf-cli config restore studio.json --mix out12
+
+# Offline examples: no device node or USB access
+mf-cli config show tests/fixtures/windows-state.json --json
+mf-cli config diff tests/fixtures/windows-state.json \
+  --against tests/fixtures/windows-state.json
+```
+
+Snapshots preserve the complete 190-byte state for inspection. Restoration
+applies only captured writable mixer fields; opaque bytes, input trims and
+other device settings are not replayed. Unsupported topology changes are
+refused. Diff/dry-run output reports omitted byte offsets. Files never overwrite
+an existing snapshot.
+
+Backups default to `$XDG_STATE_HOME/mf-cli` or `$HOME/.local/state/mf-cli`.
+Use `--backup-dir DIRECTORY` to override. A host snapshot and a verified
+readback do not guarantee the interface has finished saving to nonvolatile
+memory. No hardware save/flush command is added.
+
+See [configuration and persistence](docs/mf4/configuration.md) for the schema,
+restore scope, journaling and crash behavior.
+
+## Development and protocol reference
+
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo build --release --locked
+make -C kmod W=1
+sha256sum -c docs/mf4/SHA256SUMS
+```
+
+- [Protocol and kernel ABI](docs/mf4/protocol.md)
+- [Evidence, credits and hardware-validation boundaries](docs/mf4/evidence.md)
+- [MiniFuse 4 hardware validation](docs/mf4/hardware-validation.md)
+- [Configuration and device persistence](docs/mf4/configuration.md)
+- [Local validation record](docs/VALIDATION.md)
+- [Prepared PR description](docs/PR_DESCRIPTION.md)
+
+The new work stays within known configuration controls. Signal meters, trim
+writes, LED editing and mix-copy policy remain follow-ups. No arbitrary-command,
+device-storage-writing or firmware-update interface is provided.
 
 ## License
 
-This project consists of two components, which are licensed separately to comply with Linux kernel standards:
-
-- The **Rust CLI utility** (userspace code) is licensed under the [MIT License](LICENSE).
-- The **Linux Kernel Module** (`kmod/` directory) is licensed under the **GNU General Public License v2.0** (GPL-2.0).
+Rust userspace code and helper material: [MIT](LICENSE).
+Kernel module and its shared protocol header: [GPL-2.0-only](kmod/LICENSE).
+See the evidence document for attribution to the upstream and MF4 research work.

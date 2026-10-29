@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.85.1", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev pkg-config
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo build --release --locked
+      - run: sha256sum -c docs/mf4/SHA256SUMS
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y linux-headers-generic
+      - name: Build only; never load the module
+        run: |
+          for kdir in /usr/src/linux-headers-*-generic; do
+            make -C kmod KDIR="$kdir" W=1
+          done

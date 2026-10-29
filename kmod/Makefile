@@ -1,4 +1,5 @@
 obj-m += minifuse_mod.o
+.PHONY: all clean install
 
 # DKMS provides KERNELRELEASE. If not set, fallback to the currently running kernel.
 KVER ?= $(if $(KERNELRELEASE),$(KERNELRELEASE),$(shell uname -r))
@@ -14,7 +15,11 @@ else
 endif
 
 all:
-	$(MAKE) $(KBUILD_FLAGS) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) $(KBUILD_FLAGS) -C $(KDIR) M=$(CURDIR) modules
 
 clean:
-	$(MAKE) $(KBUILD_FLAGS) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) $(KBUILD_FLAGS) -C $(KDIR) M=$(CURDIR) clean
+
+install: all
+	$(MAKE) $(KBUILD_FLAGS) -C $(KDIR) M=$(CURDIR) modules_install
+	depmod -a $(KVER)
